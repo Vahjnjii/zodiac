@@ -95,24 +95,38 @@ JSON:`;
 
     if (method === 'GET') {
       const deviceId = url.searchParams.get('deviceId');
-      if (!deviceId) return json({ error: 'No deviceId' }, 400, headers);
-      const list     = await env.KV.list({ prefix: `session:${deviceId}:` });
-      const sessions = [];
-      for (const key of list.keys) {
-        const data = await env.KV.get(key.name, { type: 'json' });
-        if (data) sessions.push({ ...data, key: key.name });
+      if (!deviceId) return json({ error: 'No deviceId provided' }, 400, headers);
+      try {
+        const list     = await env.KV.list({ prefix: `session:${deviceId}:` });
+        const sessions = [];
+        for (const key of list.keys) {
+          try {
+            const data = await env.KV.get(key.name, { type: 'json' });
+            if (data) sessions.push({ ...data, key: key.name });
+          } catch(e) { /* skip bad entries */ }
+        }
+        sessions.sort((a, b) => (b.timestamp||0) - (a.timestamp||0));
+        return json({ sessions }, 200, headers);
+      } catch(e) {
+        return json({ error: `KV read failed: ${e.message}` }, 500, headers);
       }
-      sessions.sort((a, b) => b.timestamp - a.timestamp);
-      return json({ sessions }, 200, headers);
     }
 
     if (method === 'POST') {
-      const { deviceId, posts, timestamp, label, count } = await request.json();
-      if (!deviceId || !posts) return json({ error: 'Missing data' }, 400, headers);
-      const ts  = timestamp || Date.now();
-      const key = `session:${deviceId}:${ts}`;
-      await env.KV.put(key, JSON.stringify({ posts, timestamp: ts, label: label || '', count: count || posts.length }), { expirationTtl: TTL });
-      return json({ success: true, key }, 200, headers);
+      let body;
+      try { body = await request.json(); } catch(e) { return json({ error: 'Invalid JSON body' }, 400, headers); }
+      const { deviceId, posts, timestamp, label, count } = body;
+      if (!deviceId) return json({ error: 'Missing deviceId' }, 400, headers);
+      if (!posts || !Array.isArray(posts) || posts.length === 0) return json({ error: 'Missing or empty posts' }, 400, headers);
+      try {
+        const ts  = timestamp || Date.now();
+        const key = `session:${deviceId}:${ts}`;
+        const val = JSON.stringify({ posts, timestamp: ts, label: label || '', count: count || posts.length });
+        await env.KV.put(key, val, { expirationTtl: TTL });
+        return json({ success: true, key }, 200, headers);
+      } catch(e) {
+        return json({ error: `KV write failed: ${e.message}` }, 500, headers);
+      }
     }
 
     if (method === 'DELETE') {
