@@ -3,9 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Zodiac Pro</title>
+<title>LUMA — AI Image Generator</title>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -22,7 +25,6 @@ html,body { background:var(--bg); color:var(--tx); font-family:-apple-system,Bli
 @keyframes fadeUp  { from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none} }
 @keyframes slideUp { from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:none} }
 @keyframes toastIn { from{opacity:0;transform:translateX(-50%) translateY(10px)}to{opacity:1;transform:translateX(-50%) translateY(0)} }
-@keyframes shake   { 0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)} }
 @keyframes slideIn { from{transform:translateX(100%)}to{transform:translateX(0)} }
 
 .spin  { animation:spin 1s linear infinite; }
@@ -32,39 +34,114 @@ html,body { background:var(--bg); color:var(--tx); font-family:-apple-system,Bli
 .screen { display:none; }
 .screen.active { display:flex; }
 
-#screen-pin, #screen-idle {
+#screen-login, #screen-idle {
   min-height:100vh; flex-direction:column;
   align-items:center; justify-content:center; padding:24px;
 }
 #screen-result { height:100vh; flex-direction:column; overflow:hidden; }
 
-/* ── PIN Screen ── */
-.pin-card {
-  background:var(--s1); border:1px solid var(--bd);
-  border-radius:20px; padding:40px 32px; width:100%;
-  max-width:360px; text-align:center;
-  animation:fadeUp .3s ease both;
+/* ── Login screen ── */
+#screen-login { position:relative; overflow:hidden; background:#000; }
+
+/* Animated background orbs */
+.orb {
+  position:absolute; border-radius:50%; filter:blur(80px);
+  pointer-events:none; opacity:.35;
 }
-.pin-title  { font-size:28px; font-weight:900; letter-spacing:-1px; margin-bottom:6px; }
-.pin-sub    { font-size:14px; color:var(--mu); margin-bottom:36px; }
-.pin-dots   { display:flex; justify-content:center; gap:16px; margin-bottom:36px; }
-.pin-dot    { width:20px; height:20px; border-radius:50%; border:2px solid var(--mu2); background:transparent; transition:all .2s; }
-.pin-dot.filled { background:var(--tx); border-color:var(--tx); }
-.pin-dot.error  { border-color:var(--rd); background:var(--rd); }
-.pin-numpad { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
-.pin-key {
-  background:var(--s2); border:1px solid var(--bd); border-radius:14px;
-  padding:18px 0; font-size:22px; font-weight:700; color:var(--tx);
-  cursor:pointer; transition:all .15s; font-family:inherit;
+.orb-1 { width:500px; height:500px; background:radial-gradient(circle,#6366f1,transparent 70%); top:-120px; right:-120px; animation:orbFloat1 12s ease-in-out infinite; }
+.orb-2 { width:400px; height:400px; background:radial-gradient(circle,#8b5cf6,transparent 70%); bottom:-100px; left:-100px; animation:orbFloat2 15s ease-in-out infinite; }
+.orb-3 { width:300px; height:300px; background:radial-gradient(circle,#3b82f6,transparent 70%); top:50%; left:50%; transform:translate(-50%,-50%); animation:orbFloat3 10s ease-in-out infinite; opacity:.2; }
+
+@keyframes orbFloat1 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(-40px,30px) scale(1.08)} }
+@keyframes orbFloat2 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(30px,-40px) scale(1.1)} }
+@keyframes orbFloat3 { 0%,100%{transform:translate(-50%,-50%) scale(1)} 50%{transform:translate(-50%,-50%) scale(1.2)} }
+@keyframes shimmer  { 0%{background-position:200% center} 100%{background-position:-200% center} }
+@keyframes logoPulse{ 0%,100%{box-shadow:0 0 0 0 rgba(139,92,246,.4)} 50%{box-shadow:0 0 0 16px rgba(139,92,246,0)} }
+
+/* Grid overlay */
+#screen-login::before {
+  content:''; position:absolute; inset:0;
+  background-image:linear-gradient(rgba(255,255,255,.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.03) 1px,transparent 1px);
+  background-size:40px 40px; pointer-events:none;
 }
-.pin-key:hover  { background:#1e293b; border-color:var(--bdh); }
-.pin-key:active { transform:scale(.94); }
-.pin-key.del    { font-size:18px; color:var(--mu); }
-.pin-key.empty  { background:transparent; border:none; cursor:default; }
-.pin-shake      { animation:shake .35s ease; }
-.pin-err        { font-size:13px; color:var(--rd); margin-top:-20px; margin-bottom:20px; min-height:20px; }
-.pin-link       { background:none; border:none; color:var(--mu2); font-size:12px; cursor:pointer; font-family:inherit; margin-top:20px; display:inline-block; }
-.pin-link:hover { color:var(--mu); }
+
+/* Login card */
+.login-card {
+  position:relative; z-index:10;
+  background:rgba(13,17,23,.85); backdrop-filter:blur(24px);
+  border:1px solid rgba(255,255,255,.1);
+  border-radius:28px; padding:48px 40px; width:100%;
+  max-width:400px; text-align:center;
+  animation:fadeUp .5s cubic-bezier(.16,1,.3,1) both;
+  box-shadow:0 32px 80px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.05) inset;
+}
+
+/* Logo mark */
+.logo-mark {
+  width:72px; height:72px; border-radius:22px; margin:0 auto 20px;
+  background:linear-gradient(135deg,#6366f1,#8b5cf6,#a78bfa);
+  display:flex; align-items:center; justify-content:center;
+  font-size:34px; font-weight:900; color:#fff; letter-spacing:-1px;
+  animation:logoPulse 3s ease-in-out infinite;
+  box-shadow:0 8px 32px rgba(99,102,241,.4);
+}
+.login-brand {
+  font-size:36px; font-weight:900; letter-spacing:-1.5px;
+  background:linear-gradient(135deg,#fff 0%,#c4b5fd 50%,#818cf8 100%);
+  background-size:200% auto;
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+  background-clip:text;
+  animation:shimmer 4s linear infinite;
+  margin-bottom:6px;
+}
+.login-tagline {
+  font-size:14px; color:#6b7280; margin-bottom:36px; letter-spacing:.02em;
+}
+
+/* Feature pills */
+.feature-pills { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-bottom:36px; }
+.pill {
+  display:inline-flex; align-items:center; gap:5px;
+  background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08);
+  border-radius:50px; padding:5px 12px; font-size:11px; font-weight:600;
+  color:#9ca3af; letter-spacing:.03em;
+}
+.pill i { font-size:10px; }
+
+/* Divider */
+.login-divider {
+  display:flex; align-items:center; gap:12px; margin-bottom:20px;
+  color:#374151; font-size:12px; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+}
+.login-divider::before,.login-divider::after {
+  content:''; flex:1; height:1px; background:rgba(255,255,255,.07);
+}
+
+/* Google button */
+.google-btn {
+  display:flex; align-items:center; justify-content:center; gap:12px;
+  width:100%; background:#fff; color:#111827;
+  border:none; border-radius:16px; padding:17px 24px;
+  font-size:15px; font-weight:700; cursor:pointer;
+  font-family:inherit; transition:all .25s cubic-bezier(.16,1,.3,1);
+  box-shadow:0 4px 24px rgba(0,0,0,.4), 0 1px 0 rgba(255,255,255,.1) inset;
+  letter-spacing:.01em;
+}
+.google-btn:hover { background:#f8fafc; transform:translateY(-2px); box-shadow:0 8px 32px rgba(0,0,0,.5); }
+.google-btn:active { transform:scale(.98) translateY(0); }
+.google-btn:disabled { opacity:.45; cursor:not-allowed; transform:none; }
+
+.login-note { font-size:11.5px; color:#374151; margin-top:20px; line-height:1.7; }
+.login-note a { color:#818cf8; text-decoration:none; }
+.login-note a:hover { text-decoration:underline; }
+
+/* Setup notice */
+.setup-notice {
+  background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.25);
+  border-radius:12px; padding:14px 16px; margin-bottom:20px;
+  font-size:12.5px; color:#fcd34d; text-align:left; line-height:1.8;
+}
+.setup-notice code { background:rgba(255,255,255,.1); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace; }
 
 /* ── Main idle ── */
 .inner { width:100%; max-width:480px; text-align:center; }
@@ -84,6 +161,17 @@ select option { background:#1f2937; }
 .btn-main { background:var(--tx); color:#000; font-size:16px; padding:16px 24px;
   width:100%; border-radius:14px; letter-spacing:.03em; box-shadow:0 0 28px rgba(255,255,255,.07); }
 .btn-main:not(:disabled):hover { background:#e2e8f0; }
+
+/* ── User avatar ── */
+.user-chip {
+  display:flex; align-items:center; gap:8px;
+  background:var(--s2); border:1px solid var(--bd);
+  border-radius:50px; padding:5px 12px 5px 5px;
+  cursor:pointer; transition:all .2s;
+}
+.user-chip:hover { border-color:var(--bdh); }
+.user-avatar { width:26px; height:26px; border-radius:50%; object-fit:cover; }
+.user-name   { font-size:12px; font-weight:700; color:var(--mu); max-width:100px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 /* ── Big action buttons ── */
 .action-bar {
@@ -105,7 +193,7 @@ select option { background:#1f2937; }
 .act-btn.queue  { cursor:default; }
 .act-btn.queue:hover { border-color:var(--bd); background:rgba(255,255,255,.05); transform:none; }
 
-/* ── Post item (smaller preview) ── */
+/* ── Post item ── */
 .post-item {
   display:flex; background:var(--s1); border:1px solid var(--bd);
   border-radius:14px; overflow:hidden; margin-bottom:18px;
@@ -119,17 +207,14 @@ select option { background:#1f2937; }
 .overlay-spin { position:absolute; inset:0; background:rgba(0,0,0,.65); backdrop-filter:blur(4px); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; }
 .overlay-fail { position:absolute; inset:0; background:rgba(0,0,0,.7); display:flex; align-items:center; justify-content:center; }
 
-/* ── Topbar ── */
+/* ── Topbar / Footbar ── */
 .topbar { flex-shrink:0; background:rgba(0,0,0,.92); backdrop-filter:blur(14px); border-bottom:1px solid var(--bd); padding:12px 16px; display:flex; align-items:center; justify-content:space-between; z-index:50; }
 .footbar { flex-shrink:0; background:rgba(8,12,18,.96); backdrop-filter:blur(14px); border-top:1px solid var(--bd); padding:14px 16px; z-index:50; animation:slideUp .35s ease both; }
 .btn-circle { width:36px; height:36px; border-radius:50%; background:var(--s2); border:none; color:var(--mu); font-size:14px; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:all .2s; }
 .btn-circle:hover { background:rgba(239,68,68,.15); color:var(--rd); }
 
 /* ── History panel ── */
-.history-panel {
-  position:fixed; inset:0; z-index:100;
-  display:none;
-}
+.history-panel { position:fixed; inset:0; z-index:100; display:none; }
 .history-panel.open { display:flex; }
 .history-backdrop { position:absolute; inset:0; background:rgba(0,0,0,.6); backdrop-filter:blur(4px); }
 .history-drawer {
@@ -140,11 +225,7 @@ select option { background:#1f2937; }
 }
 .history-head { padding:18px 20px; border-bottom:1px solid var(--bd); display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
 .history-list { flex:1; overflow-y:auto; padding:12px; }
-.history-item {
-  background:var(--s1); border:1px solid var(--bd); border-radius:12px;
-  padding:14px 16px; margin-bottom:10px; cursor:pointer;
-  transition:all .2s; position:relative;
-}
+.history-item { background:var(--s1); border:1px solid var(--bd); border-radius:12px; padding:14px 16px; margin-bottom:10px; cursor:pointer; transition:all .2s; position:relative; }
 .history-item:hover { border-color:var(--bdh); }
 .history-item-title { font-size:14px; font-weight:700; margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .history-item-meta  { font-size:11px; color:var(--mu); }
@@ -152,18 +233,31 @@ select option { background:#1f2937; }
 .history-del:hover { color:var(--rd); }
 .history-empty { text-align:center; padding:40px 20px; color:var(--mu2); font-size:14px; }
 
-/* ── Toast ── */
+/* ── Sign out dropdown ── */
+.signout-menu {
+  position:fixed; top:60px; right:16px; z-index:200;
+  background:#0d1117; border:1px solid var(--bd); border-radius:14px;
+  padding:8px; min-width:200px; display:none;
+  box-shadow:0 8px 32px rgba(0,0,0,.6);
+  animation:fadeUp .2s ease both;
+}
+.signout-menu.open { display:block; }
+.signout-user { padding:10px 12px 14px; border-bottom:1px solid var(--bd); margin-bottom:6px; }
+.signout-email { font-size:12px; color:var(--mu); margin-top:2px; }
+.signout-btn { display:flex; align-items:center; gap:8px; width:100%; background:none; border:none; color:#fca5a5; padding:10px 12px; border-radius:8px; font-size:13px; font-weight:700; cursor:pointer; font-family:inherit; }
+.signout-btn:hover { background:rgba(239,68,68,.1); }
+
+/* ── Misc ── */
 .toast { position:fixed; bottom:100px; left:50%; transform:translateX(-50%); z-index:300;
   background:rgba(17,24,39,.96); backdrop-filter:blur(10px); color:var(--tx);
   padding:11px 22px; border-radius:50px; border:1px solid var(--bdh);
   box-shadow:0 8px 32px rgba(0,0,0,.6); display:flex; align-items:center;
   gap:9px; font-size:13px; font-weight:700; white-space:nowrap;
   animation:toastIn .25s ease both; }
-
 .err { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.25);
   border-radius:10px; padding:12px 14px; color:#fca5a5; font-size:13px;
   margin-bottom:14px; text-align:left; line-height:1.5; }
-.dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
+.dot  { width:7px; height:7px; border-radius:50%; display:inline-block; }
 .model-wrap { display:inline-flex; align-items:center; gap:8px; margin-top:14px; }
 .model-wrap select { background:transparent; border:none; color:var(--mu2); font-size:13px; cursor:pointer; padding:0; width:auto; font-family:inherit; }
 .model-wrap i { color:var(--mu2); font-size:12px; }
@@ -172,93 +266,79 @@ select option { background:#1f2937; }
 </head>
 <body>
 
-<!-- ══ PIN SCREEN ══ -->
-<div id="screen-pin" class="screen active">
+<!-- ══ LOGIN SCREEN ══ -->
+<div id="screen-login" class="screen active">
 
-  <!-- Loading state (shown while checking KV) -->
-  <div id="pin-loading" style="text-align:center;color:var(--mu)">
-    <i class="fas fa-circle-notch spin" style="font-size:28px;margin-bottom:12px;display:block"></i>
-    <span style="font-size:14px">Loading…</span>
+  <!-- Animated background orbs -->
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+
+  <div class="login-card">
+
+    <!-- Logo -->
+    <div class="logo-mark">L</div>
+    <div class="login-brand">LUMA</div>
+    <div class="login-tagline">AI-Powered Image Generator</div>
+
+    <!-- Feature pills -->
+    <div class="feature-pills">
+      <span class="pill"><i class="fas fa-bolt" style="color:#a78bfa"></i> Cloudflare AI</span>
+      <span class="pill"><i class="fas fa-images" style="color:#60a5fa"></i> Batch Generate</span>
+      <span class="pill"><i class="fas fa-lock" style="color:#34d399"></i> Private</span>
+    </div>
+
+    <!-- Setup notice (only if secret missing) -->
+    <div class="setup-notice" id="setup-notice" style="display:none">
+      ⚠️ <strong>Setup needed:</strong> Add <code>GOOGLE_CLIENT_ID</code> in<br>
+      Pages → Settings → Environment Variables → Secrets
+    </div>
+
+    <!-- Divider -->
+    <div class="login-divider">sign in to continue</div>
+
+    <!-- Google button -->
+    <button class="google-btn" id="google-btn" onclick="googleSignIn()">
+      <svg width="20" height="20" viewBox="0 0 48 48">
+        <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+        <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+        <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+        <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+      </svg>
+      Continue with Google
+    </button>
+
+    <!-- Hidden One Tap container -->
+    <div id="g_id_onload" data-client_id="" data-callback="onGoogleToken" data-auto_prompt="false"></div>
+
+    <p class="login-note">
+      🔒 Your data is private &amp; tied to your Google account.<br>
+      History auto-deletes after 3 days.
+    </p>
+
   </div>
-
-  <!-- Returning user: Enter PIN -->
-  <div class="pin-card" id="pin-enter" style="display:none">
-    <div style="font-size:36px;margin-bottom:8px">👋</div>
-    <div class="pin-title">Welcome Back</div>
-    <div class="pin-sub">Enter your 4-digit PIN</div>
-    <div class="pin-dots" id="pin-dots-enter">
-      <div class="pin-dot" id="e0"></div>
-      <div class="pin-dot" id="e1"></div>
-      <div class="pin-dot" id="e2"></div>
-      <div class="pin-dot" id="e3"></div>
-    </div>
-    <div class="pin-err" id="pin-err-enter"></div>
-    <div class="pin-numpad">
-      <button class="pin-key" onclick="pinKey('1')">1</button>
-      <button class="pin-key" onclick="pinKey('2')">2</button>
-      <button class="pin-key" onclick="pinKey('3')">3</button>
-      <button class="pin-key" onclick="pinKey('4')">4</button>
-      <button class="pin-key" onclick="pinKey('5')">5</button>
-      <button class="pin-key" onclick="pinKey('6')">6</button>
-      <button class="pin-key" onclick="pinKey('7')">7</button>
-      <button class="pin-key" onclick="pinKey('8')">8</button>
-      <button class="pin-key" onclick="pinKey('9')">9</button>
-      <div class="pin-key empty"></div>
-      <button class="pin-key" onclick="pinKey('0')">0</button>
-      <button class="pin-key del" onclick="pinDel()"><i class="fas fa-delete-left"></i></button>
-    </div>
-  </div>
-
-  <!-- New user: Create PIN -->
-  <div class="pin-card" id="pin-create" style="display:none">
-    <div style="font-size:36px;margin-bottom:8px">🔐</div>
-    <div class="pin-title" id="pin-create-title">New Here?</div>
-    <div class="pin-sub"   id="pin-create-sub">Create a 4-digit PIN to protect your data</div>
-    <div class="pin-dots" id="pin-dots-create">
-      <div class="pin-dot" id="c0"></div>
-      <div class="pin-dot" id="c1"></div>
-      <div class="pin-dot" id="c2"></div>
-      <div class="pin-dot" id="c3"></div>
-    </div>
-    <div class="pin-err" id="pin-err-create"></div>
-    <div class="pin-numpad">
-      <button class="pin-key" onclick="pinKey('1')">1</button>
-      <button class="pin-key" onclick="pinKey('2')">2</button>
-      <button class="pin-key" onclick="pinKey('3')">3</button>
-      <button class="pin-key" onclick="pinKey('4')">4</button>
-      <button class="pin-key" onclick="pinKey('5')">5</button>
-      <button class="pin-key" onclick="pinKey('6')">6</button>
-      <button class="pin-key" onclick="pinKey('7')">7</button>
-      <button class="pin-key" onclick="pinKey('8')">8</button>
-      <button class="pin-key" onclick="pinKey('9')">9</button>
-      <div class="pin-key empty"></div>
-      <button class="pin-key" onclick="pinKey('0')">0</button>
-      <button class="pin-key del" onclick="pinDel()"><i class="fas fa-delete-left"></i></button>
-    </div>
-  </div>
-
 </div>
 
 <!-- ══ IDLE SCREEN ══ -->
 <div id="screen-idle" class="screen">
   <div class="inner">
     <div style="margin-bottom:32px">
-      <div style="font-size:48px;font-weight:900;letter-spacing:-2px;line-height:1;margin-bottom:6px">ZODIAC PRO</div>
-      <div style="color:var(--mu);font-size:14px;font-weight:500">Batch Image Generator · Cloudflare AI</div>
+      <div style="font-size:48px;font-weight:900;letter-spacing:-2px;line-height:1;margin-bottom:6px;background:linear-gradient(135deg,#fff,#c4b5fd);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">LUMA</div>
+      <div style="color:var(--mu);font-size:14px;font-weight:500">AI Image Generator · Cloudflare AI</div>
     </div>
 
-    <textarea id="inp-text" rows="8" placeholder="Paste your zodiac posts here…"
+    <textarea id="inp-text" rows="8" placeholder="Paste your content here — zodiac, quotes, tips, any text…"
       style="font-size:16px;line-height:1.6;margin-bottom:14px"></textarea>
 
     <div id="err-box" class="err" style="display:none"></div>
 
     <button class="btn btn-main" id="btn-gen" onclick="generate()" style="margin-bottom:14px">
-      <i class="fas fa-bolt"></i> GENERATE IMAGES
+      <i class="fas fa-bolt"></i> GENERATE
     </button>
 
     <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
-      <button onclick="openHistory()" style="background:none;border:none;color:var(--mu2);font-size:13px;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:6px;">
-        <i class="fas fa-clock-rotate-left"></i> History
+      <button onclick="openHistory()" style="background:var(--s2);border:1px solid var(--bd);border-radius:12px;color:var(--tx);font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:8px;padding:11px 18px;">
+        <i class="fas fa-clock-rotate-left" style="color:var(--pu)"></i> History
       </button>
       <div class="model-wrap">
         <i class="fas fa-microchip"></i>
@@ -269,6 +349,15 @@ select option { background:#1f2937; }
           <option value="@cf/qwen/qwen3-30b-a3b-fp8">Qwen3 30B</option>
           <option value="@cf/mistralai/mistral-small-3.1-24b-instruct">Mistral Small 3.1 24B</option>
         </select>
+      </div>
+    </div>
+
+    <!-- User chip bottom -->
+    <div style="margin-top:24px;display:flex;justify-content:center">
+      <div class="user-chip" onclick="toggleSignOut()">
+        <img id="user-avatar" class="user-avatar" src="" alt="">
+        <span id="user-name" class="user-name"></span>
+        <i class="fas fa-chevron-down" style="font-size:10px;color:var(--mu2)"></i>
       </div>
     </div>
   </div>
@@ -285,9 +374,12 @@ select option { background:#1f2937; }
       </div>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
-      <button onclick="openHistory()" style="background:none;border:1px solid var(--bd);border-radius:8px;color:var(--mu);padding:7px 12px;font-size:12px;cursor:pointer;font-family:inherit;">
-        <i class="fas fa-clock-rotate-left"></i>
+      <button onclick="openHistory()" style="background:var(--s2);border:1px solid var(--bd);border-radius:10px;color:var(--tx);padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:6px;">
+        <i class="fas fa-clock-rotate-left" style="color:var(--pu)"></i> History
       </button>
+      <div class="user-chip" onclick="toggleSignOut()" style="padding:4px 10px 4px 4px">
+        <img id="user-avatar-top" class="user-avatar" src="" alt="" style="width:22px;height:22px">
+      </div>
       <button class="btn-circle" onclick="reset()"><i class="fas fa-xmark"></i></button>
     </div>
   </div>
@@ -313,7 +405,7 @@ select option { background:#1f2937; }
     <div class="history-head">
       <div>
         <div style="font-size:16px;font-weight:900">History</div>
-        <div style="font-size:12px;color:var(--mu);margin-top:2px">Last 3 days · Auto-deleted after</div>
+        <div style="font-size:12px;color:var(--mu);margin-top:2px">Last 3 days · auto-deleted after</div>
       </div>
       <button class="btn-circle" onclick="closeHistory()"><i class="fas fa-xmark"></i></button>
     </div>
@@ -321,6 +413,17 @@ select option { background:#1f2937; }
       <div class="history-empty">Loading…</div>
     </div>
   </div>
+</div>
+
+<!-- ══ SIGN OUT MENU ══ -->
+<div class="signout-menu" id="signout-menu">
+  <div class="signout-user">
+    <div style="font-size:13px;font-weight:700" id="so-name"></div>
+    <div class="signout-email" id="so-email"></div>
+  </div>
+  <button class="signout-btn" onclick="signOut()">
+    <i class="fas fa-right-from-bracket"></i> Sign out
+  </button>
 </div>
 
 <!-- ══ CAPTURE ZONE ══ -->
@@ -333,162 +436,108 @@ select option { background:#1f2937; }
 /* ══ State ══ */
 let posts = [], rsts = [], blobs = [], queue = [], active = new Set();
 let usedFilenames = new Set();
+let currentUser = null; // { sub, email, name, picture }
 const CONCUR = 2;
 const EMOJIS = ["✨","🌟","🌙","💫","🔮","🧿","🔥","💎","🌈","🛸","🪐","⚡","🍀"];
 
-/* ══ Device ID ══ */
-function getDeviceId() {
-  let id = localStorage.getItem('zp_device');
-  if (!id) {
-    id = 'dev_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
-    localStorage.setItem('zp_device', id);
-  }
-  return id;
-}
+/* ══ Google Auth ══ */
+let _clientId = '';
 
-/* ══ PIN System ══ */
-let pinBuffer = '';
-let pinMode   = 'enter'; // 'enter' | 'create' | 'confirm'
-let pinFirst  = '';
-
-async function initPin() {
-  const deviceId = getDeviceId();
-
-  // Already verified this browser session — skip PIN
-  if (localStorage.getItem('zp_verified') === '1') {
-    show('idle');
-    return;
-  }
-
-  // Show loading while we check KV
-  document.getElementById('pin-loading').style.display = 'block';
-  document.getElementById('pin-enter').style.display   = 'none';
-  document.getElementById('pin-create').style.display  = 'none';
-  show('pin');
-
-  try {
-    const res = await fetch(`/pin?deviceId=${deviceId}`);
-    const d   = await res.json();
-    if (d.exists) {
-      // Returning user — show Enter PIN
-      pinMode = 'enter';
-      document.getElementById('pin-loading').style.display = 'none';
-      document.getElementById('pin-enter').style.display   = 'block';
-    } else {
-      // New user — show Create PIN
-      pinMode = 'create';
-      document.getElementById('pin-loading').style.display  = 'none';
-      document.getElementById('pin-create').style.display   = 'block';
-      document.getElementById('pin-create-title').textContent = 'New Here?';
-      document.getElementById('pin-create-sub').textContent   = 'Create a 4-digit PIN to protect your data';
-    }
-  } catch(e) {
-    // Network error — still show create
-    pinMode = 'create';
-    document.getElementById('pin-loading').style.display  = 'none';
-    document.getElementById('pin-create').style.display   = 'block';
-  }
-}
-
-// Which dots prefix to use based on current mode
-function dotPrefix() {
-  if (pinMode === 'enter')           return 'e';
-  if (pinMode === 'create')          return 'c';
-  if (pinMode === 'confirm')         return 'c';
-  return 'c';
-}
-function errEl() {
-  return document.getElementById(
-    (pinMode === 'enter') ? 'pin-err-enter' : 'pin-err-create'
-  );
-}
-function cardEl() {
-  return document.getElementById(
-    (pinMode === 'enter') ? 'pin-enter' : 'pin-create'
-  );
-}
-
-function pinKey(k) {
-  if (pinBuffer.length >= 4) return;
-  pinBuffer += k;
-  updateDots();
-  if (pinBuffer.length === 4) setTimeout(submitPin, 150);
-}
-function pinDel() {
-  pinBuffer = pinBuffer.slice(0, -1);
-  updateDots();
-  errEl().textContent = '';
-}
-function updateDots(error=false) {
-  const p = dotPrefix();
-  for (let i = 0; i < 4; i++) {
-    const d = document.getElementById(`${p}${i}`);
-    if (!d) continue;
-    d.classList.toggle('filled', i < pinBuffer.length);
-    d.classList.toggle('error', error);
-  }
-}
-
-async function submitPin() {
-  const deviceId = getDeviceId();
-
-  // ── NEW USER: first entry ──
-  if (pinMode === 'create') {
-    pinFirst  = pinBuffer;
-    pinBuffer = '';
-    pinMode   = 'confirm';
-    updateDots();
-    document.getElementById('pin-create-title').textContent = 'Confirm PIN';
-    document.getElementById('pin-create-sub').textContent   = 'Enter the same PIN again';
-    errEl().textContent = '';
-    return;
-  }
-
-  // ── NEW USER: confirm entry ──
-  if (pinMode === 'confirm') {
-    if (pinBuffer !== pinFirst) {
-      pinBuffer = ''; pinFirst = ''; pinMode = 'create';
-      updateDots(true);
-      errEl().textContent = "PINs don't match — try again";
-      cardEl().classList.add('pin-shake');
-      setTimeout(() => {
-        cardEl().classList.remove('pin-shake');
-        updateDots();
-        document.getElementById('pin-create-title').textContent = 'New Here?';
-        document.getElementById('pin-create-sub').textContent   = 'Create a 4-digit PIN to protect your data';
-      }, 400);
+async function initGoogleAuth() {
+  // Check if already logged in (localStorage) — skip fetch if so
+  const saved = localStorage.getItem('zp_user');
+  if (saved) {
+    try {
+      currentUser = JSON.parse(saved);
+      enterApp();
       return;
-    }
-    // Match — save to KV
-    try {
-      await fetch('/pin', { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ deviceId, action:'create', pin: pinBuffer }) });
-    } catch(e) {}
-    localStorage.setItem('zp_verified','1');
-    show('idle');
+    } catch(e) { localStorage.removeItem('zp_user'); }
+  }
+
+  // Fetch Google Client ID from Cloudflare Secret via /config
+  try {
+    const res = await fetch('/config');
+    const cfg = await res.json();
+    _clientId = cfg.googleClientId || '';
+  } catch(e) {}
+
+  if (!_clientId) {
+    document.getElementById('setup-notice').style.display = 'block';
+    document.getElementById('google-btn').disabled = true;
+    document.getElementById('google-btn').style.opacity = '.4';
     return;
   }
 
-  // ── RETURNING USER: verify ──
-  if (pinMode === 'enter') {
-    try {
-      const res = await fetch('/pin', { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ deviceId, action:'verify', pin: pinBuffer }) });
-      const d = await res.json();
-      if (d.valid) {
-        localStorage.setItem('zp_verified','1');
-        show('idle');
-        return;
-      }
-    } catch(e) {}
-    // Wrong PIN
-    pinBuffer = '';
-    updateDots(true);
-    errEl().textContent = 'Wrong PIN. Try again.';
-    cardEl().classList.add('pin-shake');
-    setTimeout(() => { cardEl().classList.remove('pin-shake'); updateDots(); }, 400);
+  document.getElementById('g_id_onload').setAttribute('data-client_id', _clientId);
+
+  // Init Google One Tap (auto-prompt)
+  google.accounts.id.initialize({
+    client_id: _clientId,
+    callback: onGoogleToken,
+    auto_select: true,
+  });
+  google.accounts.id.prompt();
+}
+
+function googleSignIn() {
+  if (!_clientId) return;
+  google.accounts.id.initialize({ client_id: _clientId, callback: onGoogleToken });
+  google.accounts.id.prompt();
+}
+
+function onGoogleToken(response) {
+  // Decode JWT payload (no verification needed client-side, server uses sub as key)
+  const payload = JSON.parse(atob(response.credential.split('.')[1]));
+  currentUser = {
+    sub:     payload.sub,      // unique stable Google user ID
+    email:   payload.email,
+    name:    payload.name,
+    picture: payload.picture,
+  };
+  localStorage.setItem('zp_user', JSON.stringify(currentUser));
+  enterApp();
+}
+
+function enterApp() {
+  // Set user info in UI
+  const name  = currentUser.name?.split(' ')[0] || 'User';
+  const pic   = currentUser.picture || '';
+  document.getElementById('user-name').textContent   = name;
+  document.getElementById('user-avatar').src         = pic;
+  document.getElementById('user-avatar-top').src     = pic;
+  document.getElementById('so-name').textContent     = currentUser.name || '';
+  document.getElementById('so-email').textContent    = currentUser.email || '';
+  show('idle');
+}
+
+function getDeviceId() {
+  // Use Google sub as the unique user ID for KV keys
+  return currentUser?.sub || localStorage.getItem('zp_device') || 'anon';
+}
+
+function toggleSignOut() {
+  document.getElementById('signout-menu').classList.toggle('open');
+}
+
+function signOut() {
+  localStorage.removeItem('zp_user');
+  currentUser = null;
+  document.getElementById('signout-menu').classList.remove('open');
+  show('login');
+  // Revoke Google session so One Tap shows again
+  if (_clientId) {
+    google.accounts.id.initialize({ client_id: _clientId, callback: onGoogleToken });
+    google.accounts.id.prompt();
   }
 }
+
+// Close sign out menu when clicking elsewhere
+document.addEventListener('click', e => {
+  const menu = document.getElementById('signout-menu');
+  if (menu.classList.contains('open') && !e.target.closest('.user-chip') && !e.target.closest('.signout-menu')) {
+    menu.classList.remove('open');
+  }
+});
 
 /* ══ Screens ══ */
 function show(id) {
@@ -503,14 +552,14 @@ function toast(msg) {
   el.innerHTML = `<i class="fas fa-circle-check" style="color:var(--gn)"></i>${msg}`;
   el.style.display = 'flex';
   clearTimeout(_tt);
-  _tt = setTimeout(() => el.style.display='none', 3000);
+  _tt = setTimeout(() => el.style.display = 'none', 3000);
 }
 function showErr(msg) {
   const el = document.getElementById('err-box');
   el.innerHTML = `<i class="fas fa-triangle-exclamation" style="margin-right:8px"></i>${msg}`;
   el.style.display = 'block';
 }
-function hideErr() { document.getElementById('err-box').style.display='none'; }
+function hideErr() { document.getElementById('err-box').style.display = 'none'; }
 
 /* ══ Text helpers ══ */
 function cleanTitle(t) {
@@ -520,16 +569,16 @@ function cleanTitle(t) {
 }
 function cleanContent(lines) {
   return (lines||[]).map(line => {
-    if (line==='') return '';
+    if (line === '') return '';
     let l = line.replace(/#/g,'').trim();
-    if (l.length>0 && !/^(\p{Extended_Pictographic}|\p{Emoji_Presentation})/u.test(l))
+    if (l.length > 0 && !/^(\p{Extended_Pictographic}|\p{Emoji_Presentation})/u.test(l))
       l = `${EMOJIS[Math.floor(Math.random()*EMOJIS.length)]} ${l}`;
     return l;
   });
 }
 function getLayout(title, content) {
   const c = content.join('').length + title.length;
-  let s = {ts:85,cs:45,lh:1.4,px:100,py:320,sep:80};
+  let s = {ts:85, cs:45, lh:1.4, px:100, py:320, sep:80};
   if(c>300) s={...s,ts:70,cs:40,sep:70,lh:1.35};
   if(c>500) s={...s,ts:60,cs:36,sep:60,lh:1.3};
   if(c>700) s={...s,ts:50,cs:30,sep:50,lh:1.25};
@@ -537,24 +586,25 @@ function getLayout(title, content) {
   return s;
 }
 
-/* ══ Filename from title (unique, no hashtag, _ separated) ══ */
+/* ══ Filename generator ══ */
 function titleToFilename(title) {
   const words = cleanTitle(title)
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, '')
-    .split(/\s+/)
-    .filter(w => w.length > 1)
-    .slice(0, 3);
-
+    .toLowerCase().replace(/[^a-z0-9\s]/g,'').split(/\s+/)
+    .filter(w => w.length > 1).slice(0, 3);
   let base = words.join('_') || 'zodiac_post';
-  let name = base;
-  let n = 1;
+  let name = base, n = 1;
   while (usedFilenames.has(name)) { name = `${base}_${n}`; n++; }
   usedFilenames.add(name);
   return name;
 }
+const _fnMap = {};
+function getFilenameForPost(i, title) {
+  if (_fnMap[i]) return _fnMap[i];
+  const fn = titleToFilename(title);
+  _fnMap[i] = fn; return fn;
+}
 
-/* ══ Build 1080×1920 card HTML ══ */
+/* ══ Build 1080×1920 card ══ */
 function buildCard(post) {
   const title   = cleanTitle(post.title);
   const content = cleanContent(post.content);
@@ -586,14 +636,11 @@ function buildPreview(post, sc) {
   </div>`;
 }
 
-/* ══ Build post item ══ */
+/* ══ Build post item DOM ══ */
 function buildPostItem(post, i) {
-  const SC = 0.13;
-  const w  = Math.round(1080 * SC);
-  const h  = Math.round(1920 * SC);
+  const SC = 0.13, w = Math.round(1080*SC), h = Math.round(1920*SC);
   const div = document.createElement('div');
-  div.className = 'post-item';
-  div.id = `item-${i}`;
+  div.className = 'post-item'; div.id = `item-${i}`;
   div.style.animationDelay = `${i*50}ms`;
   div.innerHTML = `
     <div class="preview-pane">
@@ -618,14 +665,12 @@ function buildPostItem(post, i) {
 
 /* ══ Update post state ══ */
 function updateItem(i) {
-  const st   = rsts[i];
+  const st = rsts[i];
   const item = document.getElementById(`item-${i}`);
   const ov   = document.getElementById(`ov-${i}`);
   const acts = document.getElementById(`acts-${i}`);
   if (!item) return;
-
   if (st==='done') item.classList.add('done');
-
   if (st==='rend') {
     ov.className='overlay-spin';
     ov.innerHTML=`<i class="fas fa-circle-notch spin" style="font-size:24px;color:#60a5fa"></i>
@@ -638,21 +683,16 @@ function updateItem(i) {
   } else if (st==='done') {
     ov.style.display='none';
   }
-
-  // Buttons: Share → Copy → Download (bigger)
   if (st==='done') {
     acts.innerHTML=`
-      <button class="act-btn" onclick="shareOne(${i})" title="Share">
-        <i class="fas fa-share-nodes" style="color:var(--gn)"></i>
-        <span>Share</span>
+      <button class="act-btn" onclick="shareOne(${i})">
+        <i class="fas fa-share-nodes" style="color:var(--gn)"></i><span>Share</span>
       </button>
-      <button class="act-btn" id="copy-${i}" onclick="copyTitle(${i})" title="Copy title">
-        <i class="fas fa-copy" style="color:var(--pu)"></i>
-        <span>Copy</span>
+      <button class="act-btn" id="copy-${i}" onclick="copyTitle(${i})">
+        <i class="fas fa-copy" style="color:var(--pu)"></i><span>Copy</span>
       </button>
-      <button class="act-btn" onclick="dlOne(${i})" title="Download">
-        <i class="fas fa-download" style="color:var(--bl)"></i>
-        <span>Save</span>
+      <button class="act-btn" onclick="dlOne(${i})">
+        <i class="fas fa-download" style="color:var(--bl)"></i><span>Save</span>
       </button>`;
   }
 }
@@ -684,21 +724,20 @@ async function renderPost(i) {
       width:1080, height:1920, windowWidth:1080, windowHeight:1920
     });
     if (!cv.width) throw new Error('empty canvas');
-    await new Promise((res,rej)=>{
-      cv.toBlob(blob=>{
+    await new Promise((res,rej) => {
+      cv.toBlob(blob => {
         if(blob){ blobs[i]={blob}; setRst(i,'done'); res(); }
         else rej(new Error('blob fail'));
-      },'image/png');
+      }, 'image/png');
     });
   } catch(e) { console.error(e); setRst(i,'fail'); }
 }
 
 async function processNext() {
   while (active.size<CONCUR && queue.length>0) {
-    const i=queue.shift(); if(i===undefined) break;
-    active.add(i);
-    await sleep(60);
-    renderPost(i).then(()=>{ active.delete(i); processNext(); });
+    const i = queue.shift(); if(i===undefined) break;
+    active.add(i); await sleep(60);
+    renderPost(i).then(() => { active.delete(i); processNext(); });
   }
 }
 
@@ -709,8 +748,8 @@ async function generate() {
   hideErr();
   const model = document.getElementById('sel-model').value;
   const btn   = document.getElementById('btn-gen');
-  btn.disabled=true;
-  btn.innerHTML='<i class="fas fa-circle-notch spin"></i> PROCESSING…';
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-circle-notch spin"></i> PROCESSING…';
 
   try {
     const res = await fetch('/api', {
@@ -720,7 +759,7 @@ async function generate() {
     const raw = await res.text();
     if (!raw||!raw.trim()) throw new Error(`Empty response (HTTP ${res.status}). Check AI binding named: AI`);
     let data;
-    try { data=JSON.parse(raw); } catch(e) { throw new Error(`Server error: ${raw.slice(0,120)}`); }
+    try { data = JSON.parse(raw); } catch(e) { throw new Error(`Server error: ${raw.slice(0,120)}`); }
     if (!res.ok||data.error) throw new Error(data.error||`HTTP ${res.status}`);
     if (!data.posts?.length) throw new Error('No posts generated. Try simplifying your input.');
 
@@ -730,110 +769,78 @@ async function generate() {
     queue  = posts.map((_,i)=>i);
     active = new Set();
     usedFilenames = new Set();
+    Object.keys(_fnMap).forEach(k => delete _fnMap[k]);
 
-    // Build capture zone
     document.getElementById('capture-zone').innerHTML = posts.map((p,i)=>
       `<div id="cap-${i}" style="width:1080px;height:1920px;background:#000;position:absolute;top:0;left:0">${buildCard(p)}</div>`
     ).join('');
 
-    // Build result list
     const list = document.getElementById('list-inner');
-    list.innerHTML='';
-    posts.forEach((p,i)=>list.appendChild(buildPostItem(p,i)));
+    list.innerHTML = '';
+    posts.forEach((p,i) => list.appendChild(buildPostItem(p,i)));
     updateStatus();
     show('result');
     processNext();
-
-    // Save to history
     saveHistory(posts);
 
   } catch(e) {
     showErr(e.message);
   } finally {
-    btn.disabled=false;
-    btn.innerHTML='<i class="fas fa-bolt"></i> GENERATE IMAGES';
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-bolt"></i> GENERATE';
   }
 }
 
-/* ══ Share — title only (no hashtag), image + title to FB / native share ══ */
+/* ══ Share / Download ══ */
 async function shareOne(i) {
-  const b = blobs[i]?.blob;
-  const p = posts[i];
-  if (!b||!p) return;
-
-  const title = cleanTitle(p.title); // clean title, NO hashtag
-
-  // Copy only the clean title to clipboard
+  const b = blobs[i]?.blob; const p = posts[i]; if(!b||!p) return;
+  const title = cleanTitle(p.title);
   try { await navigator.clipboard.writeText(title); } catch(e){}
-
-  const file = new File([b], `${titleToFilename ? usedFilenameOf(i) : 'zodiac'}.png`, {type:'image/png'});
+  const fn   = getFilenameForPost(i, p.title);
+  const file = new File([b], `${fn}.png`, {type:'image/png'});
   if (navigator.share && navigator.canShare?.({files:[file]})) {
     try {
-      await navigator.share({
-        files: [file],
-        title: title,
-        text: title        // ← title only, no hashtag
-      });
+      await navigator.share({ files:[file], title, text:title });
       toast('Shared! Title copied.');
-    } catch(e) {
-      if (e.name!=='AbortError') toast('Share cancelled.');
-    }
+    } catch(e) { if(e.name!=='AbortError') toast('Share cancelled.'); }
   } else {
-    toast('Title copied! Share not supported on this browser — use Save instead.');
+    toast('Title copied! Use Save on this browser.');
   }
 }
 
-// Map index to filename used during download
-const _fnMap = {};
 async function dlOne(i) {
-  const b = blobs[i]?.blob;
-  const p = posts[i];
-  if (!b||!p) return;
+  const b = blobs[i]?.blob; const p = posts[i]; if(!b||!p) return;
   try { await navigator.clipboard.writeText(cleanTitle(p.title)); } catch(e){}
   const fn = getFilenameForPost(i, p.title);
   triggerDl(b, fn+'.png');
   toast('Saved & title copied!');
 }
 
-function usedFilenameOf(i) {
-  return _fnMap[i] || (cleanTitle(posts[i]?.title||'').toLowerCase().replace(/\s+/g,'_').slice(0,20) || 'zodiac');
-}
-
-function getFilenameForPost(i, title) {
-  if (_fnMap[i]) return _fnMap[i];
-  const fn = titleToFilename(title);
-  _fnMap[i] = fn;
-  return fn;
-}
-
 async function copyTitle(i) {
-  const p = posts[i]; if (!p) return;
+  const p = posts[i]; if(!p) return;
   try { await navigator.clipboard.writeText(cleanTitle(p.title)); } catch(e){}
   const btn = document.getElementById(`copy-${i}`);
-  if (btn) {
+  if(btn) {
     btn.innerHTML=`<i class="fas fa-check" style="color:var(--yw)"></i><span>Done</span>`;
-    setTimeout(()=>{btn.innerHTML=`<i class="fas fa-copy" style="color:var(--pu)"></i><span>Copy</span>`;},2000);
+    setTimeout(()=>{ btn.innerHTML=`<i class="fas fa-copy" style="color:var(--pu)"></i><span>Copy</span>`; },2000);
   }
   toast('Title copied!');
 }
 
 async function downloadAll() {
   toast('Starting batch download…');
-  for (let i=0;i<blobs.length;i++) {
+  for (let i=0; i<blobs.length; i++) {
     const b=blobs[i]; const p=posts[i];
-    if (b?.blob&&p) {
-      const fn = getFilenameForPost(i, p.title);
-      triggerDl(b.blob, fn+'.png');
-      await sleep(500);
-    }
+    if(b?.blob&&p) { triggerDl(b.blob, getFilenameForPost(i,p.title)+'.png'); await sleep(500); }
   }
   toast(`All ${blobs.filter(Boolean).length} images downloaded!`);
 }
 
 function triggerDl(blob, name) {
-  const url=URL.createObjectURL(blob);
-  const a=Object.assign(document.createElement('a'),{href:url,download:name});
-  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  const url = URL.createObjectURL(blob);
+  const a   = Object.assign(document.createElement('a'), {href:url, download:name});
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 /* ══ History ══ */
@@ -844,17 +851,16 @@ async function saveHistory(postsData) {
   try {
     await fetch('/history', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ deviceId, posts: postsData, timestamp: Date.now(), label, count })
+      body: JSON.stringify({ deviceId, posts:postsData, timestamp:Date.now(), label, count })
     });
   } catch(e) { console.warn('History save failed', e); }
 }
 
 async function openHistory() {
   document.getElementById('history-panel').classList.add('open');
-  document.getElementById('history-list').innerHTML='<div class="history-empty">Loading…</div>';
-  const deviceId = getDeviceId();
+  document.getElementById('history-list').innerHTML='<div class="history-empty"><i class="fas fa-circle-notch spin" style="font-size:20px;margin-bottom:8px;display:block"></i>Loading…</div>';
   try {
-    const res = await fetch(`/history?deviceId=${deviceId}`);
+    const res = await fetch(`/history?deviceId=${getDeviceId()}`);
     const d   = await res.json();
     renderHistory(d.sessions||[]);
   } catch(e) {
@@ -869,22 +875,22 @@ function closeHistory() {
 function renderHistory(sessions) {
   const list = document.getElementById('history-list');
   if (!sessions.length) {
-    list.innerHTML='<div class="history-empty">No history yet.<br>Your generations will appear here for 3 days.</div>';
+    list.innerHTML='<div class="history-empty">No history yet.<br>Your generations appear here for 3 days.</div>';
     return;
   }
-  list.innerHTML = sessions.map((s, idx) => {
-    const date  = new Date(s.timestamp).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-    const cnt   = s.count || s.posts?.length || 0;
-    const label = escHtml(s.label || 'Batch');
+  list.innerHTML = sessions.map(s => {
+    const date    = new Date(s.timestamp).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    const cnt     = s.count || s.posts?.length || 0;
+    const label   = escHtml(s.label||'Batch');
     const safeKey = escHtml(s.key);
-    const safeData = escHtml(JSON.stringify(s.posts));
+    const safeData= escHtml(JSON.stringify(s.posts));
     return `<div class="history-item" onclick="loadSessionData(this)" data-posts='${safeData}'>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
         <span style="background:var(--bl);color:#fff;font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;letter-spacing:.06em;flex-shrink:0">${cnt} IMAGE${cnt!==1?'S':''}</span>
         <div class="history-item-title" style="margin-bottom:0">${label}</div>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between">
-        <div class="history-item-meta">${date} · tap to restore batch</div>
+        <div class="history-item-meta">${date} · tap to restore</div>
         <button class="history-del" onclick="deleteSession(event,'${safeKey}')"><i class="fas fa-xmark"></i></button>
       </div>
     </div>`;
@@ -892,26 +898,27 @@ function renderHistory(sessions) {
 }
 
 function loadSessionData(el) {
-  const raw = el.getAttribute('data-posts');
-  try { loadSession(raw); } catch(e) { console.error(e); }
+  try { loadSession(el.getAttribute('data-posts')); } catch(e){ console.error(e); }
 }
 
 function loadSession(jsonStr) {
   closeHistory();
   let loadedPosts;
-  try { loadedPosts = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr; }
-  catch(e) { console.error('loadSession parse error', e); return; }
+  try { loadedPosts = typeof jsonStr==='string' ? JSON.parse(jsonStr) : jsonStr; }
+  catch(e) { console.error(e); return; }
+
   posts  = loadedPosts;
   rsts   = new Array(posts.length).fill('wait');
   blobs  = new Array(posts.length).fill(null);
   queue  = posts.map((_,i)=>i);
   active = new Set();
   usedFilenames = new Set();
+  Object.keys(_fnMap).forEach(k => delete _fnMap[k]);
 
   document.getElementById('capture-zone').innerHTML = posts.map((p,i)=>
     `<div id="cap-${i}" style="width:1080px;height:1920px;background:#000;position:absolute;top:0;left:0">${buildCard(p)}</div>`
   ).join('');
-  const list=document.getElementById('list-inner');
+  const list = document.getElementById('list-inner');
   list.innerHTML='';
   posts.forEach((p,i)=>list.appendChild(buildPostItem(p,i)));
   updateStatus();
@@ -930,6 +937,7 @@ function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
 /* ══ Reset ══ */
 function reset() {
   posts=[]; rsts=[]; blobs=[]; queue=[]; active=new Set(); usedFilenames=new Set();
+  Object.keys(_fnMap).forEach(k => delete _fnMap[k]);
   document.getElementById('capture-zone').innerHTML='';
   document.getElementById('list-inner').innerHTML='';
   document.getElementById('inp-text').value='';
@@ -938,10 +946,15 @@ function reset() {
   show('idle');
 }
 
-function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
 /* ══ Init ══ */
-initPin();
+// Google GSI calls this when ready
+window.onGoogleLibraryLoad = () => { initGoogleAuth(); };
+// Also try on load in case script already loaded
+window.addEventListener('load', () => {
+  if (window.google?.accounts?.id) initGoogleAuth();
+});
 </script>
 </body>
 </html>
