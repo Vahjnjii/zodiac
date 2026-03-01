@@ -173,17 +173,26 @@ select option { background:#1f2937; }
 <body>
 
 <!-- ══ PIN SCREEN ══ -->
-<div id="screen-pin" class="screen">
-  <div class="pin-card" id="pin-card">
-    <div class="pin-title" id="pin-heading">🔐 Zodiac Pro</div>
-    <div class="pin-sub"   id="pin-subtext">Create your 4-digit PIN</div>
-    <div class="pin-dots"  id="pin-dots">
-      <div class="pin-dot" id="d0"></div>
-      <div class="pin-dot" id="d1"></div>
-      <div class="pin-dot" id="d2"></div>
-      <div class="pin-dot" id="d3"></div>
+<div id="screen-pin" class="screen active">
+
+  <!-- Loading state (shown while checking KV) -->
+  <div id="pin-loading" style="text-align:center;color:var(--mu)">
+    <i class="fas fa-circle-notch spin" style="font-size:28px;margin-bottom:12px;display:block"></i>
+    <span style="font-size:14px">Loading…</span>
+  </div>
+
+  <!-- Returning user: Enter PIN -->
+  <div class="pin-card" id="pin-enter" style="display:none">
+    <div style="font-size:36px;margin-bottom:8px">👋</div>
+    <div class="pin-title">Welcome Back</div>
+    <div class="pin-sub">Enter your 4-digit PIN</div>
+    <div class="pin-dots" id="pin-dots-enter">
+      <div class="pin-dot" id="e0"></div>
+      <div class="pin-dot" id="e1"></div>
+      <div class="pin-dot" id="e2"></div>
+      <div class="pin-dot" id="e3"></div>
     </div>
-    <div class="pin-err" id="pin-err"></div>
+    <div class="pin-err" id="pin-err-enter"></div>
     <div class="pin-numpad">
       <button class="pin-key" onclick="pinKey('1')">1</button>
       <button class="pin-key" onclick="pinKey('2')">2</button>
@@ -199,6 +208,35 @@ select option { background:#1f2937; }
       <button class="pin-key del" onclick="pinDel()"><i class="fas fa-delete-left"></i></button>
     </div>
   </div>
+
+  <!-- New user: Create PIN -->
+  <div class="pin-card" id="pin-create" style="display:none">
+    <div style="font-size:36px;margin-bottom:8px">🔐</div>
+    <div class="pin-title" id="pin-create-title">New Here?</div>
+    <div class="pin-sub"   id="pin-create-sub">Create a 4-digit PIN to protect your data</div>
+    <div class="pin-dots" id="pin-dots-create">
+      <div class="pin-dot" id="c0"></div>
+      <div class="pin-dot" id="c1"></div>
+      <div class="pin-dot" id="c2"></div>
+      <div class="pin-dot" id="c3"></div>
+    </div>
+    <div class="pin-err" id="pin-err-create"></div>
+    <div class="pin-numpad">
+      <button class="pin-key" onclick="pinKey('1')">1</button>
+      <button class="pin-key" onclick="pinKey('2')">2</button>
+      <button class="pin-key" onclick="pinKey('3')">3</button>
+      <button class="pin-key" onclick="pinKey('4')">4</button>
+      <button class="pin-key" onclick="pinKey('5')">5</button>
+      <button class="pin-key" onclick="pinKey('6')">6</button>
+      <button class="pin-key" onclick="pinKey('7')">7</button>
+      <button class="pin-key" onclick="pinKey('8')">8</button>
+      <button class="pin-key" onclick="pinKey('9')">9</button>
+      <div class="pin-key empty"></div>
+      <button class="pin-key" onclick="pinKey('0')">0</button>
+      <button class="pin-key del" onclick="pinDel()"><i class="fas fa-delete-left"></i></button>
+    </div>
+  </div>
+
 </div>
 
 <!-- ══ IDLE SCREEN ══ -->
@@ -310,100 +348,145 @@ function getDeviceId() {
 
 /* ══ PIN System ══ */
 let pinBuffer = '';
-let pinMode   = 'enter'; // 'create' | 'confirm' | 'enter'
+let pinMode   = 'enter'; // 'enter' | 'create' | 'confirm'
 let pinFirst  = '';
 
 async function initPin() {
   const deviceId = getDeviceId();
-  // Check if already verified this session
-  if (sessionStorage.getItem('zp_verified') === '1') {
+
+  // Already verified this browser session — skip PIN
+  if (localStorage.getItem('zp_verified') === '1') {
     show('idle');
     return;
   }
-  // Check if PIN exists
+
+  // Show loading while we check KV
+  document.getElementById('pin-loading').style.display = 'block';
+  document.getElementById('pin-enter').style.display   = 'none';
+  document.getElementById('pin-create').style.display  = 'none';
+  show('pin');
+
   try {
     const res = await fetch(`/pin?deviceId=${deviceId}`);
     const d   = await res.json();
     if (d.exists) {
+      // Returning user — show Enter PIN
       pinMode = 'enter';
-      document.getElementById('pin-heading').textContent = '🔐 Zodiac Pro';
-      document.getElementById('pin-subtext').textContent = 'Enter your 4-digit PIN';
+      document.getElementById('pin-loading').style.display = 'none';
+      document.getElementById('pin-enter').style.display   = 'block';
     } else {
+      // New user — show Create PIN
       pinMode = 'create';
-      document.getElementById('pin-heading').textContent = '🔐 Create PIN';
-      document.getElementById('pin-subtext').textContent = 'Set a 4-digit PIN to protect your data';
+      document.getElementById('pin-loading').style.display  = 'none';
+      document.getElementById('pin-create').style.display   = 'block';
+      document.getElementById('pin-create-title').textContent = 'New Here?';
+      document.getElementById('pin-create-sub').textContent   = 'Create a 4-digit PIN to protect your data';
     }
   } catch(e) {
+    // Network error — still show create
     pinMode = 'create';
+    document.getElementById('pin-loading').style.display  = 'none';
+    document.getElementById('pin-create').style.display   = 'block';
   }
-  show('pin');
+}
+
+// Which dots prefix to use based on current mode
+function dotPrefix() {
+  if (pinMode === 'enter')           return 'e';
+  if (pinMode === 'create')          return 'c';
+  if (pinMode === 'confirm')         return 'c';
+  return 'c';
+}
+function errEl() {
+  return document.getElementById(
+    (pinMode === 'enter') ? 'pin-err-enter' : 'pin-err-create'
+  );
+}
+function cardEl() {
+  return document.getElementById(
+    (pinMode === 'enter') ? 'pin-enter' : 'pin-create'
+  );
 }
 
 function pinKey(k) {
   if (pinBuffer.length >= 4) return;
   pinBuffer += k;
   updateDots();
-  if (pinBuffer.length === 4) setTimeout(submitPin, 120);
+  if (pinBuffer.length === 4) setTimeout(submitPin, 150);
 }
 function pinDel() {
-  pinBuffer = pinBuffer.slice(0,-1);
+  pinBuffer = pinBuffer.slice(0, -1);
   updateDots();
-  document.getElementById('pin-err').textContent = '';
+  errEl().textContent = '';
 }
 function updateDots(error=false) {
-  for (let i=0;i<4;i++) {
-    const d = document.getElementById(`d${i}`);
+  const p = dotPrefix();
+  for (let i = 0; i < 4; i++) {
+    const d = document.getElementById(`${p}${i}`);
+    if (!d) continue;
     d.classList.toggle('filled', i < pinBuffer.length);
     d.classList.toggle('error', error);
   }
 }
+
 async function submitPin() {
   const deviceId = getDeviceId();
 
+  // ── NEW USER: first entry ──
   if (pinMode === 'create') {
-    pinFirst = pinBuffer;
+    pinFirst  = pinBuffer;
     pinBuffer = '';
-    pinMode = 'confirm';
+    pinMode   = 'confirm';
     updateDots();
-    document.getElementById('pin-subtext').textContent = 'Confirm your 4-digit PIN';
-    document.getElementById('pin-err').textContent = '';
+    document.getElementById('pin-create-title').textContent = 'Confirm PIN';
+    document.getElementById('pin-create-sub').textContent   = 'Enter the same PIN again';
+    errEl().textContent = '';
     return;
   }
 
+  // ── NEW USER: confirm entry ──
   if (pinMode === 'confirm') {
     if (pinBuffer !== pinFirst) {
-      pinBuffer = '';
+      pinBuffer = ''; pinFirst = ''; pinMode = 'create';
       updateDots(true);
-      document.getElementById('pin-err').textContent = "PINs don't match. Try again.";
-      document.getElementById('pin-card').classList.add('pin-shake');
-      setTimeout(() => { document.getElementById('pin-card').classList.remove('pin-shake'); updateDots(); }, 400);
-      pinMode = 'create';
-      pinFirst = '';
-      document.getElementById('pin-subtext').textContent = 'Set a 4-digit PIN to protect your data';
+      errEl().textContent = "PINs don't match — try again";
+      cardEl().classList.add('pin-shake');
+      setTimeout(() => {
+        cardEl().classList.remove('pin-shake');
+        updateDots();
+        document.getElementById('pin-create-title').textContent = 'New Here?';
+        document.getElementById('pin-create-sub').textContent   = 'Create a 4-digit PIN to protect your data';
+      }, 400);
       return;
     }
-    // Save PIN
-    await fetch('/pin', { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ deviceId, action:'create', pin: pinBuffer }) });
-    sessionStorage.setItem('zp_verified','1');
+    // Match — save to KV
+    try {
+      await fetch('/pin', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ deviceId, action:'create', pin: pinBuffer }) });
+    } catch(e) {}
+    localStorage.setItem('zp_verified','1');
     show('idle');
     return;
   }
 
+  // ── RETURNING USER: verify ──
   if (pinMode === 'enter') {
-    const res = await fetch('/pin', { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ deviceId, action:'verify', pin: pinBuffer }) });
-    const d = await res.json();
-    if (d.valid) {
-      sessionStorage.setItem('zp_verified','1');
-      show('idle');
-    } else {
-      pinBuffer = '';
-      updateDots(true);
-      document.getElementById('pin-err').textContent = 'Incorrect PIN. Try again.';
-      document.getElementById('pin-card').classList.add('pin-shake');
-      setTimeout(() => { document.getElementById('pin-card').classList.remove('pin-shake'); updateDots(); }, 400);
-    }
+    try {
+      const res = await fetch('/pin', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ deviceId, action:'verify', pin: pinBuffer }) });
+      const d = await res.json();
+      if (d.valid) {
+        localStorage.setItem('zp_verified','1');
+        show('idle');
+        return;
+      }
+    } catch(e) {}
+    // Wrong PIN
+    pinBuffer = '';
+    updateDots(true);
+    errEl().textContent = 'Wrong PIN. Try again.';
+    cardEl().classList.add('pin-shake');
+    setTimeout(() => { cardEl().classList.remove('pin-shake'); updateDots(); }, 400);
   }
 }
 
@@ -756,11 +839,12 @@ function triggerDl(blob, name) {
 /* ══ History ══ */
 async function saveHistory(postsData) {
   const deviceId = getDeviceId();
-  const label = cleanTitle(postsData[0]?.title||'Session') + (postsData.length>1?` +${postsData.length-1}`:'');
+  const label = cleanTitle(postsData[0]?.title||'Session');
+  const count = postsData.length;
   try {
     await fetch('/history', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ deviceId, posts: postsData, timestamp: Date.now(), label })
+      body: JSON.stringify({ deviceId, posts: postsData, timestamp: Date.now(), label, count })
     });
   } catch(e) { console.warn('History save failed', e); }
 }
@@ -785,22 +869,38 @@ function closeHistory() {
 function renderHistory(sessions) {
   const list = document.getElementById('history-list');
   if (!sessions.length) {
-    list.innerHTML='<div class="history-empty">No history yet.<br>Generated posts will appear here for 3 days.</div>';
+    list.innerHTML='<div class="history-empty">No history yet.<br>Your generations will appear here for 3 days.</div>';
     return;
   }
-  list.innerHTML = sessions.map(s => {
-    const date = new Date(s.timestamp).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-    return `<div class="history-item" onclick="loadSession(${JSON.stringify(JSON.stringify(s.posts))})">
-      <div class="history-item-title">${escHtml(s.label||'Session')}</div>
-      <div class="history-item-meta">${date} · ${s.posts?.length||0} posts</div>
-      <button class="history-del" onclick="deleteSession(event,'${escHtml(s.key)}')"><i class="fas fa-xmark"></i></button>
+  list.innerHTML = sessions.map((s, idx) => {
+    const date  = new Date(s.timestamp).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    const cnt   = s.count || s.posts?.length || 0;
+    const label = escHtml(s.label || 'Batch');
+    const safeKey = escHtml(s.key);
+    const safeData = escHtml(JSON.stringify(s.posts));
+    return `<div class="history-item" onclick="loadSessionData(this)" data-posts='${safeData}'>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="background:var(--bl);color:#fff;font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;letter-spacing:.06em;flex-shrink:0">${cnt} IMAGE${cnt!==1?'S':''}</span>
+        <div class="history-item-title" style="margin-bottom:0">${label}</div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div class="history-item-meta">${date} · tap to restore batch</div>
+        <button class="history-del" onclick="deleteSession(event,'${safeKey}')"><i class="fas fa-xmark"></i></button>
+      </div>
     </div>`;
   }).join('');
 }
 
+function loadSessionData(el) {
+  const raw = el.getAttribute('data-posts');
+  try { loadSession(raw); } catch(e) { console.error(e); }
+}
+
 function loadSession(jsonStr) {
   closeHistory();
-  const loadedPosts = JSON.parse(jsonStr);
+  let loadedPosts;
+  try { loadedPosts = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr; }
+  catch(e) { console.error('loadSession parse error', e); return; }
   posts  = loadedPosts;
   rsts   = new Array(posts.length).fill('wait');
   blobs  = new Array(posts.length).fill(null);
