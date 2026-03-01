@@ -86,36 +86,6 @@ JSON:`;
   }
 
   // ════════════════════════════════════════
-  // GET  /pin?deviceId=x   → { exists }
-  // POST /pin              → create | verify
-  // ════════════════════════════════════════
-  if (path === '/pin') {
-    if (!env.KV) return json({ error: 'KV binding missing. Add binding variable name: KV' }, 500, headers);
-
-    if (method === 'GET') {
-      const deviceId = url.searchParams.get('deviceId');
-      if (!deviceId) return json({ error: 'No deviceId' }, 400, headers);
-      const existing = await env.KV.get(`pin:${deviceId}`);
-      return json({ exists: !!existing }, 200, headers);
-    }
-
-    if (method === 'POST') {
-      const { deviceId, action, pin } = await request.json();
-      if (!deviceId) return json({ error: 'No deviceId' }, 400, headers);
-      if (action === 'create') {
-        if (!pin || pin.length !== 4) return json({ error: 'PIN must be 4 digits' }, 400, headers);
-        await env.KV.put(`pin:${deviceId}`, pin, { expirationTtl: 60 * 60 * 24 * 90 }); // 90 days
-        return json({ success: true }, 200, headers);
-      }
-      if (action === 'verify') {
-        const stored = await env.KV.get(`pin:${deviceId}`);
-        return json({ valid: stored === pin }, 200, headers);
-      }
-      return json({ error: 'Unknown action' }, 400, headers);
-    }
-  }
-
-  // ════════════════════════════════════════
   // GET    /history?deviceId=x  → { sessions }
   // POST   /history             → save session
   // DELETE /history             → delete session
@@ -151,6 +121,15 @@ JSON:`;
       await env.KV.delete(key);
       return json({ success: true }, 200, headers);
     }
+  }
+
+  // ════════════════════════════════════════
+  // GET /config  →  returns public config (Google Client ID from secret)
+  // ════════════════════════════════════════
+  if (path === '/config' && method === 'GET') {
+    return json({
+      googleClientId: env.GOOGLE_CLIENT_ID || ''
+    }, 200, headers);
   }
 
   // ── Pass through to static files (index.html etc) ──
