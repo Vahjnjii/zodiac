@@ -153,8 +153,8 @@ JSON:`;
     }
   }
 
-  // ── Pass through everything else (index.html etc) ──
-  return new Response('Not found', { status: 404 });
+  // ── Pass through to static files (index.html etc) ──
+  return context.next();
 }
 
 // ── Helpers ──
