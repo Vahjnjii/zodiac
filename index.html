@@ -386,7 +386,13 @@ async function generate() {
       body: JSON.stringify({ text, model })
     });
 
-    const data = await res.json();
+    // Safely read body — guard against empty / non-JSON responses
+    const raw = await res.text();
+    if (!raw || !raw.trim()) throw new Error(`Empty response from server (HTTP ${res.status}). Check your AI binding is enabled.`);
+    let data;
+    try { data = JSON.parse(raw); }
+    catch(e) { throw new Error(`Server returned non-JSON: ${raw.slice(0, 120)}`); }
+
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
     if (!data.posts?.length) throw new Error('No posts generated. Try simplifying your input.');
 
