@@ -104,7 +104,7 @@ JSON:`;
       if (!deviceId) return json({ error: 'No deviceId' }, 400, headers);
       if (action === 'create') {
         if (!pin || pin.length !== 4) return json({ error: 'PIN must be 4 digits' }, 400, headers);
-        await env.KV.put(`pin:${deviceId}`, pin);
+        await env.KV.put(`pin:${deviceId}`, pin, { expirationTtl: 60 * 60 * 24 * 90 }); // 90 days
         return json({ success: true }, 200, headers);
       }
       if (action === 'verify') {
@@ -137,11 +137,11 @@ JSON:`;
     }
 
     if (method === 'POST') {
-      const { deviceId, posts, timestamp, label } = await request.json();
+      const { deviceId, posts, timestamp, label, count } = await request.json();
       if (!deviceId || !posts) return json({ error: 'Missing data' }, 400, headers);
       const ts  = timestamp || Date.now();
       const key = `session:${deviceId}:${ts}`;
-      await env.KV.put(key, JSON.stringify({ posts, timestamp: ts, label: label || '' }), { expirationTtl: TTL });
+      await env.KV.put(key, JSON.stringify({ posts, timestamp: ts, label: label || '', count: count || posts.length }), { expirationTtl: TTL });
       return json({ success: true, key }, 200, headers);
     }
 
