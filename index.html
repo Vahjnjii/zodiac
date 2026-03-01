@@ -7,105 +7,206 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg:#000; --s1:#0d1117; --s2:#161b22;
-    --bd:rgba(255,255,255,.08); --bdh:rgba(255,255,255,.2);
-    --tx:#fff; --mu:#6b7280; --mu2:#374151;
-    --bl:#3b82f6; --gn:#22c55e; --rd:#ef4444; --yw:#f59e0b;
-  }
-  html, body { background:var(--bg); color:var(--tx); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; min-height:100vh; }
-  ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-thumb{background:#1f2937;border-radius:4px}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:#000; --s1:#0d1117; --s2:#161b22;
+  --bd:rgba(255,255,255,.08); --bdh:rgba(255,255,255,.22);
+  --tx:#fff; --mu:#6b7280; --mu2:#374151;
+  --bl:#3b82f6; --gn:#22c55e; --rd:#ef4444; --yw:#f59e0b; --pu:#a78bfa;
+}
+html,body { background:var(--bg); color:var(--tx); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; min-height:100vh; }
+::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-thumb{background:#1f2937;border-radius:4px}
 
-  @keyframes spin    { to{transform:rotate(360deg)} }
-  @keyframes blink   { 0%,100%{opacity:1}50%{opacity:.25} }
-  @keyframes fadeUp  { from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none} }
-  @keyframes slideUp { from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none} }
-  @keyframes toastIn { from{opacity:0;transform:translateX(-50%) translateY(10px)}to{opacity:1;transform:translateX(-50%) translateY(0)} }
+@keyframes spin    { to{transform:rotate(360deg)} }
+@keyframes blink   { 0%,100%{opacity:1}50%{opacity:.2} }
+@keyframes fadeUp  { from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none} }
+@keyframes slideUp { from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:none} }
+@keyframes toastIn { from{opacity:0;transform:translateX(-50%) translateY(10px)}to{opacity:1;transform:translateX(-50%) translateY(0)} }
+@keyframes shake   { 0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)} }
+@keyframes slideIn { from{transform:translateX(100%)}to{transform:translateX(0)} }
 
-  .screen { display:none; }
-  .screen.active { display:flex; }
+.spin  { animation:spin 1s linear infinite; }
+.blink { animation:blink 1.4s ease-in-out infinite; }
 
-  /* ── Idle ── */
-  #screen-idle {
-    min-height:100vh; flex-direction:column;
-    align-items:center; justify-content:center; padding:24px;
-  }
-  .inner { width:100%; max-width:480px; text-align:center; }
+/* ── Screens ── */
+.screen { display:none; }
+.screen.active { display:flex; }
 
-  /* ── Result ── */
-  #screen-result { height:100vh; flex-direction:column; overflow:hidden; }
+#screen-pin, #screen-idle {
+  min-height:100vh; flex-direction:column;
+  align-items:center; justify-content:center; padding:24px;
+}
+#screen-result { height:100vh; flex-direction:column; overflow:hidden; }
 
-  /* inputs */
-  textarea, select {
-    width:100%; background:var(--s2); border:1px solid var(--bd); border-radius:12px;
-    padding:12px 16px; color:var(--tx); font-size:15px; font-family:inherit;
-    outline:none; transition:border-color .2s; display:block;
-  }
-  textarea:focus, select:focus { border-color:var(--bdh); }
-  textarea { resize:none; }
-  select option { background:#1f2937; }
+/* ── PIN Screen ── */
+.pin-card {
+  background:var(--s1); border:1px solid var(--bd);
+  border-radius:20px; padding:40px 32px; width:100%;
+  max-width:360px; text-align:center;
+  animation:fadeUp .3s ease both;
+}
+.pin-title  { font-size:28px; font-weight:900; letter-spacing:-1px; margin-bottom:6px; }
+.pin-sub    { font-size:14px; color:var(--mu); margin-bottom:36px; }
+.pin-dots   { display:flex; justify-content:center; gap:16px; margin-bottom:36px; }
+.pin-dot    { width:20px; height:20px; border-radius:50%; border:2px solid var(--mu2); background:transparent; transition:all .2s; }
+.pin-dot.filled { background:var(--tx); border-color:var(--tx); }
+.pin-dot.error  { border-color:var(--rd); background:var(--rd); }
+.pin-numpad { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+.pin-key {
+  background:var(--s2); border:1px solid var(--bd); border-radius:14px;
+  padding:18px 0; font-size:22px; font-weight:700; color:var(--tx);
+  cursor:pointer; transition:all .15s; font-family:inherit;
+}
+.pin-key:hover  { background:#1e293b; border-color:var(--bdh); }
+.pin-key:active { transform:scale(.94); }
+.pin-key.del    { font-size:18px; color:var(--mu); }
+.pin-key.empty  { background:transparent; border:none; cursor:default; }
+.pin-shake      { animation:shake .35s ease; }
+.pin-err        { font-size:13px; color:var(--rd); margin-top:-20px; margin-bottom:20px; min-height:20px; }
+.pin-link       { background:none; border:none; color:var(--mu2); font-size:12px; cursor:pointer; font-family:inherit; margin-top:20px; display:inline-block; }
+.pin-link:hover { color:var(--mu); }
 
-  /* buttons */
-  .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; border:none; border-radius:12px; font-family:inherit; font-weight:800; cursor:pointer; transition:all .2s; }
-  .btn:disabled { cursor:not-allowed; opacity:.4; }
-  .btn-main { background:var(--tx); color:#000; font-size:16px; padding:15px 24px; width:100%; border-radius:14px; letter-spacing:.03em; box-shadow:0 0 28px rgba(255,255,255,.07); }
-  .btn-main:not(:disabled):hover { background:#e2e8f0; }
-  .btn-icon { width:46px; height:46px; border-radius:10px; background:rgba(255,255,255,.04); border:1px solid var(--bd); flex-direction:column; gap:3px; font-size:13px; }
-  .btn-icon:hover { border-color:var(--bdh); }
-  .btn-icon .lbl { font-size:8px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--mu); }
-  .btn-circle { width:38px; height:38px; border-radius:50%; background:var(--s2); border:none; color:var(--mu); font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:all .2s; }
-  .btn-circle:hover { background:rgba(239,68,68,.15); color:var(--rd); }
-  .btn-link { background:none; border:none; color:var(--mu2); font-size:13px; cursor:pointer; font-family:inherit; display:inline-flex; align-items:center; gap:6px; transition:color .2s; padding:0; }
-  .btn-link:hover { color:var(--mu); }
+/* ── Main idle ── */
+.inner { width:100%; max-width:480px; text-align:center; }
+textarea, select {
+  width:100%; background:var(--s2); border:1px solid var(--bd); border-radius:12px;
+  padding:12px 16px; color:var(--tx); font-size:15px; font-family:inherit;
+  outline:none; transition:border-color .2s; display:block;
+}
+textarea:focus, select:focus { border-color:var(--bdh); }
+textarea { resize:none; }
+select option { background:#1f2937; }
 
-  /* label */
-  .label { display:block; font-size:11px; font-weight:700; color:var(--mu); letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
+.btn { display:inline-flex; align-items:center; justify-content:center; gap:8px;
+  border:none; border-radius:12px; font-family:inherit; font-weight:800;
+  cursor:pointer; transition:all .2s; }
+.btn:disabled { cursor:not-allowed; opacity:.4; }
+.btn-main { background:var(--tx); color:#000; font-size:16px; padding:16px 24px;
+  width:100%; border-radius:14px; letter-spacing:.03em; box-shadow:0 0 28px rgba(255,255,255,.07); }
+.btn-main:not(:disabled):hover { background:#e2e8f0; }
 
-  /* topbar / footbar */
-  .topbar { flex-shrink:0; background:rgba(0,0,0,.92); backdrop-filter:blur(14px); border-bottom:1px solid var(--bd); padding:14px 20px; display:flex; align-items:center; justify-content:space-between; z-index:50; }
-  .footbar { flex-shrink:0; background:rgba(8,12,18,.96); backdrop-filter:blur(14px); border-top:1px solid var(--bd); padding:14px 20px; z-index:50; animation:slideUp .35s ease both; }
+/* ── Big action buttons ── */
+.action-bar {
+  width:80px; background:#06080b; border-left:1px solid var(--bd);
+  display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:6px; padding:10px 0;
+}
+.act-btn {
+  width:62px; height:62px; border-radius:12px;
+  background:rgba(255,255,255,.05); border:1px solid var(--bd);
+  display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:4px; cursor:pointer;
+  transition:all .2s; font-family:inherit;
+}
+.act-btn:hover  { border-color:var(--bdh); background:rgba(255,255,255,.09); }
+.act-btn:active { transform:scale(.93); }
+.act-btn i      { font-size:18px; }
+.act-btn span   { font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--mu); }
+.act-btn.queue  { cursor:default; }
+.act-btn.queue:hover { border-color:var(--bd); background:rgba(255,255,255,.05); transform:none; }
 
-  /* post list */
-  #post-list { flex:1; overflow-y:auto; padding:20px; }
+/* ── Post item (smaller preview) ── */
+.post-item {
+  display:flex; background:var(--s1); border:1px solid var(--bd);
+  border-radius:14px; overflow:hidden; margin-bottom:18px;
+  height:300px; flex-shrink:0;
+  transition:border-color .3s,box-shadow .3s;
+  animation:fadeUp .3s ease both;
+}
+.post-item.done { border-color:rgba(34,197,94,.35); box-shadow:0 0 18px rgba(34,197,94,.06); }
+.preview-pane { flex:1; background:#000; display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative; }
+.preview-frame { height:90%; aspect-ratio:9/16; position:relative; background:#000; border:1px solid rgba(255,255,255,.04); box-shadow:0 8px 32px rgba(0,0,0,.9); overflow:hidden; }
+.overlay-spin { position:absolute; inset:0; background:rgba(0,0,0,.65); backdrop-filter:blur(4px); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; }
+.overlay-fail { position:absolute; inset:0; background:rgba(0,0,0,.7); display:flex; align-items:center; justify-content:center; }
 
-  /* post item */
-  .post-item { display:flex; background:var(--s1); border:1px solid var(--bd); border-radius:14px; overflow:hidden; margin-bottom:20px; height:360px; flex-shrink:0; transition:border-color .3s, box-shadow .3s; animation:fadeUp .3s ease both; }
-  .post-item.done { border-color:rgba(34,197,94,.35); box-shadow:0 0 18px rgba(34,197,94,.06); }
-  .preview-pane { flex:1; background:#000; display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative; }
-  .preview-frame { height:88%; aspect-ratio:9/16; position:relative; background:#000; border:1px solid rgba(255,255,255,.04); box-shadow:0 8px 32px rgba(0,0,0,.9); overflow:hidden; }
-  .action-bar { width:66px; background:#06080b; border-left:1px solid var(--bd); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:12px 0; }
-  .overlay-spin { position:absolute; inset:0; background:rgba(0,0,0,.65); backdrop-filter:blur(4px); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; }
-  .overlay-fail { position:absolute; inset:0; background:rgba(0,0,0,.7); display:flex; align-items:center; justify-content:center; }
+/* ── Topbar ── */
+.topbar { flex-shrink:0; background:rgba(0,0,0,.92); backdrop-filter:blur(14px); border-bottom:1px solid var(--bd); padding:12px 16px; display:flex; align-items:center; justify-content:space-between; z-index:50; }
+.footbar { flex-shrink:0; background:rgba(8,12,18,.96); backdrop-filter:blur(14px); border-top:1px solid var(--bd); padding:14px 16px; z-index:50; animation:slideUp .35s ease both; }
+.btn-circle { width:36px; height:36px; border-radius:50%; background:var(--s2); border:none; color:var(--mu); font-size:14px; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:all .2s; }
+.btn-circle:hover { background:rgba(239,68,68,.15); color:var(--rd); }
 
-  /* toast */
-  .toast { position:fixed; bottom:96px; left:50%; transform:translateX(-50%); z-index:300; background:rgba(17,24,39,.96); backdrop-filter:blur(10px); color:var(--tx); padding:11px 22px; border-radius:50px; border:1px solid var(--bdh); box-shadow:0 8px 32px rgba(0,0,0,.6); display:flex; align-items:center; gap:9px; font-size:13px; font-weight:700; white-space:nowrap; animation:toastIn .25s ease both; }
+/* ── History panel ── */
+.history-panel {
+  position:fixed; inset:0; z-index:100;
+  display:none;
+}
+.history-panel.open { display:flex; }
+.history-backdrop { position:absolute; inset:0; background:rgba(0,0,0,.6); backdrop-filter:blur(4px); }
+.history-drawer {
+  position:absolute; right:0; top:0; bottom:0; width:min(360px,100vw);
+  background:#0a0e14; border-left:1px solid var(--bd);
+  display:flex; flex-direction:column;
+  animation:slideIn .3s ease both;
+}
+.history-head { padding:18px 20px; border-bottom:1px solid var(--bd); display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
+.history-list { flex:1; overflow-y:auto; padding:12px; }
+.history-item {
+  background:var(--s1); border:1px solid var(--bd); border-radius:12px;
+  padding:14px 16px; margin-bottom:10px; cursor:pointer;
+  transition:all .2s; position:relative;
+}
+.history-item:hover { border-color:var(--bdh); }
+.history-item-title { font-size:14px; font-weight:700; margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.history-item-meta  { font-size:11px; color:var(--mu); }
+.history-del { position:absolute; top:10px; right:10px; background:none; border:none; color:var(--mu2); font-size:13px; cursor:pointer; padding:4px; }
+.history-del:hover { color:var(--rd); }
+.history-empty { text-align:center; padding:40px 20px; color:var(--mu2); font-size:14px; }
 
-  /* error */
-  .err { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.25); border-radius:10px; padding:12px 14px; color:#fca5a5; font-size:13px; margin-bottom:14px; text-align:left; line-height:1.5; }
+/* ── Toast ── */
+.toast { position:fixed; bottom:100px; left:50%; transform:translateX(-50%); z-index:300;
+  background:rgba(17,24,39,.96); backdrop-filter:blur(10px); color:var(--tx);
+  padding:11px 22px; border-radius:50px; border:1px solid var(--bdh);
+  box-shadow:0 8px 32px rgba(0,0,0,.6); display:flex; align-items:center;
+  gap:9px; font-size:13px; font-weight:700; white-space:nowrap;
+  animation:toastIn .25s ease both; }
 
-  /* misc */
-  .dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
-  .spin  { animation:spin 1s linear infinite; }
-  .blink { animation:blink 1.4s ease-in-out infinite; }
-
-  /* model selector dropdown (subtle) */
-  .model-wrap { display:inline-flex; align-items:center; gap:8px; margin-top:16px; }
-  .model-wrap select { background:transparent; border:none; color:var(--mu2); font-size:13px; cursor:pointer; padding:0; width:auto; font-family:inherit; }
-  .model-wrap select:focus { border:none; }
-  .model-wrap i { color:var(--mu2); font-size:12px; }
-
-  #capture-zone { position:fixed; top:0; left:0; width:1080px; height:1920px; z-index:-100; opacity:0; pointer-events:none; overflow:hidden; }
+.err { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.25);
+  border-radius:10px; padding:12px 14px; color:#fca5a5; font-size:13px;
+  margin-bottom:14px; text-align:left; line-height:1.5; }
+.dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
+.model-wrap { display:inline-flex; align-items:center; gap:8px; margin-top:14px; }
+.model-wrap select { background:transparent; border:none; color:var(--mu2); font-size:13px; cursor:pointer; padding:0; width:auto; font-family:inherit; }
+.model-wrap i { color:var(--mu2); font-size:12px; }
+#capture-zone { position:fixed; top:0; left:0; width:1080px; height:1920px; z-index:-100; opacity:0; pointer-events:none; overflow:hidden; }
 </style>
 </head>
 <body>
 
-<!-- ══ IDLE ══ -->
-<div id="screen-idle" class="screen active">
+<!-- ══ PIN SCREEN ══ -->
+<div id="screen-pin" class="screen">
+  <div class="pin-card" id="pin-card">
+    <div class="pin-title" id="pin-heading">🔐 Zodiac Pro</div>
+    <div class="pin-sub"   id="pin-subtext">Create your 4-digit PIN</div>
+    <div class="pin-dots"  id="pin-dots">
+      <div class="pin-dot" id="d0"></div>
+      <div class="pin-dot" id="d1"></div>
+      <div class="pin-dot" id="d2"></div>
+      <div class="pin-dot" id="d3"></div>
+    </div>
+    <div class="pin-err" id="pin-err"></div>
+    <div class="pin-numpad">
+      <button class="pin-key" onclick="pinKey('1')">1</button>
+      <button class="pin-key" onclick="pinKey('2')">2</button>
+      <button class="pin-key" onclick="pinKey('3')">3</button>
+      <button class="pin-key" onclick="pinKey('4')">4</button>
+      <button class="pin-key" onclick="pinKey('5')">5</button>
+      <button class="pin-key" onclick="pinKey('6')">6</button>
+      <button class="pin-key" onclick="pinKey('7')">7</button>
+      <button class="pin-key" onclick="pinKey('8')">8</button>
+      <button class="pin-key" onclick="pinKey('9')">9</button>
+      <div class="pin-key empty"></div>
+      <button class="pin-key" onclick="pinKey('0')">0</button>
+      <button class="pin-key del" onclick="pinDel()"><i class="fas fa-delete-left"></i></button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ IDLE SCREEN ══ -->
+<div id="screen-idle" class="screen">
   <div class="inner">
-    <div style="margin-bottom:36px">
-      <div style="font-size:50px;font-weight:900;letter-spacing:-2px;line-height:1;margin-bottom:8px">ZODIAC PRO</div>
-      <div style="color:var(--mu);font-size:15px;font-weight:500">Batch Image Generator · Cloudflare AI</div>
+    <div style="margin-bottom:32px">
+      <div style="font-size:48px;font-weight:900;letter-spacing:-2px;line-height:1;margin-bottom:6px">ZODIAC PRO</div>
+      <div style="color:var(--mu);font-size:14px;font-weight:500">Batch Image Generator · Cloudflare AI</div>
     </div>
 
     <textarea id="inp-text" rows="8" placeholder="Paste your zodiac posts here…"
@@ -117,39 +218,48 @@
       <i class="fas fa-bolt"></i> GENERATE IMAGES
     </button>
 
-    <!-- subtle model selector -->
-    <div class="model-wrap">
-      <i class="fas fa-microchip"></i>
-      <select id="sel-model">
-        <option value="@cf/meta/llama-3.1-8b-instruct-fast">Llama 3.1 8B ★</option>
-        <option value="@cf/meta/llama-3.3-70b-instruct-fp8-fast">Llama 3.3 70B</option>
-        <option value="@cf/meta/llama-4-scout-17b-16e-instruct">Llama 4 Scout 17B</option>
-        <option value="@cf/qwen/qwen3-30b-a3b-fp8">Qwen3 30B</option>
-        <option value="@cf/mistralai/mistral-small-3.1-24b-instruct">Mistral Small 3.1 24B</option>
-      </select>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
+      <button onclick="openHistory()" style="background:none;border:none;color:var(--mu2);font-size:13px;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:6px;">
+        <i class="fas fa-clock-rotate-left"></i> History
+      </button>
+      <div class="model-wrap">
+        <i class="fas fa-microchip"></i>
+        <select id="sel-model">
+          <option value="@cf/meta/llama-3.1-8b-instruct-fast">Llama 3.1 8B ★</option>
+          <option value="@cf/meta/llama-3.3-70b-instruct-fp8-fast">Llama 3.3 70B</option>
+          <option value="@cf/meta/llama-4-scout-17b-16e-instruct">Llama 4 Scout 17B</option>
+          <option value="@cf/qwen/qwen3-30b-a3b-fp8">Qwen3 30B</option>
+          <option value="@cf/mistralai/mistral-small-3.1-24b-instruct">Mistral Small 3.1 24B</option>
+        </select>
+      </div>
     </div>
   </div>
 </div>
 
-<!-- ══ RESULT ══ -->
+<!-- ══ RESULT SCREEN ══ -->
 <div id="screen-result" class="screen">
   <div class="topbar">
     <div>
-      <div style="font-size:17px;font-weight:900;letter-spacing:-.4px">READY TO SHARE</div>
-      <div style="display:flex;align-items:center;gap:6px;margin-top:5px">
+      <div style="font-size:16px;font-weight:900;letter-spacing:-.4px">READY TO SHARE</div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
         <span class="dot" id="status-dot" style="background:var(--gn)"></span>
         <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--mu)" id="status-lbl">0 of 0 Rendered</span>
       </div>
     </div>
-    <button class="btn-circle" onclick="reset()"><i class="fas fa-xmark"></i></button>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button onclick="openHistory()" style="background:none;border:1px solid var(--bd);border-radius:8px;color:var(--mu);padding:7px 12px;font-size:12px;cursor:pointer;font-family:inherit;">
+        <i class="fas fa-clock-rotate-left"></i>
+      </button>
+      <button class="btn-circle" onclick="reset()"><i class="fas fa-xmark"></i></button>
+    </div>
   </div>
 
-  <div id="post-list">
-    <div style="max-width:500px;margin:0 auto" id="list-inner"></div>
+  <div id="post-list" style="flex:1;overflow-y:auto;padding:16px;">
+    <div style="max-width:520px;margin:0 auto" id="list-inner"></div>
   </div>
 
   <div id="footer-bar" class="footbar" style="display:none">
-    <div style="max-width:500px;margin:0 auto">
+    <div style="max-width:520px;margin:0 auto">
       <button class="btn btn-main" onclick="downloadAll()">
         <i class="fas fa-cloud-arrow-down" style="font-size:16px"></i>
         <span id="dl-lbl">DOWNLOAD ALL</span>
@@ -158,43 +268,168 @@
   </div>
 </div>
 
-<!-- ══ HIDDEN CAPTURE ZONE ══ -->
+<!-- ══ HISTORY PANEL ══ -->
+<div id="history-panel" class="history-panel">
+  <div class="history-backdrop" onclick="closeHistory()"></div>
+  <div class="history-drawer">
+    <div class="history-head">
+      <div>
+        <div style="font-size:16px;font-weight:900">History</div>
+        <div style="font-size:12px;color:var(--mu);margin-top:2px">Last 3 days · Auto-deleted after</div>
+      </div>
+      <button class="btn-circle" onclick="closeHistory()"><i class="fas fa-xmark"></i></button>
+    </div>
+    <div class="history-list" id="history-list">
+      <div class="history-empty">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ CAPTURE ZONE ══ -->
 <div id="capture-zone"></div>
 
 <!-- ══ TOAST ══ -->
 <div id="toast" class="toast" style="display:none"></div>
 
 <script>
-/* ── State ── */
+/* ══ State ══ */
 let posts = [], rsts = [], blobs = [], queue = [], active = new Set();
+let usedFilenames = new Set();
 const CONCUR = 2;
 const EMOJIS = ["✨","🌟","🌙","💫","🔮","🧿","🔥","💎","🌈","🛸","🪐","⚡","🍀"];
 
-/* ── Toast ── */
+/* ══ Device ID ══ */
+function getDeviceId() {
+  let id = localStorage.getItem('zp_device');
+  if (!id) {
+    id = 'dev_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
+    localStorage.setItem('zp_device', id);
+  }
+  return id;
+}
+
+/* ══ PIN System ══ */
+let pinBuffer = '';
+let pinMode   = 'enter'; // 'create' | 'confirm' | 'enter'
+let pinFirst  = '';
+
+async function initPin() {
+  const deviceId = getDeviceId();
+  // Check if already verified this session
+  if (sessionStorage.getItem('zp_verified') === '1') {
+    show('idle');
+    return;
+  }
+  // Check if PIN exists
+  try {
+    const res = await fetch(`/pin?deviceId=${deviceId}`);
+    const d   = await res.json();
+    if (d.exists) {
+      pinMode = 'enter';
+      document.getElementById('pin-heading').textContent = '🔐 Zodiac Pro';
+      document.getElementById('pin-subtext').textContent = 'Enter your 4-digit PIN';
+    } else {
+      pinMode = 'create';
+      document.getElementById('pin-heading').textContent = '🔐 Create PIN';
+      document.getElementById('pin-subtext').textContent = 'Set a 4-digit PIN to protect your data';
+    }
+  } catch(e) {
+    pinMode = 'create';
+  }
+  show('pin');
+}
+
+function pinKey(k) {
+  if (pinBuffer.length >= 4) return;
+  pinBuffer += k;
+  updateDots();
+  if (pinBuffer.length === 4) setTimeout(submitPin, 120);
+}
+function pinDel() {
+  pinBuffer = pinBuffer.slice(0,-1);
+  updateDots();
+  document.getElementById('pin-err').textContent = '';
+}
+function updateDots(error=false) {
+  for (let i=0;i<4;i++) {
+    const d = document.getElementById(`d${i}`);
+    d.classList.toggle('filled', i < pinBuffer.length);
+    d.classList.toggle('error', error);
+  }
+}
+async function submitPin() {
+  const deviceId = getDeviceId();
+
+  if (pinMode === 'create') {
+    pinFirst = pinBuffer;
+    pinBuffer = '';
+    pinMode = 'confirm';
+    updateDots();
+    document.getElementById('pin-subtext').textContent = 'Confirm your 4-digit PIN';
+    document.getElementById('pin-err').textContent = '';
+    return;
+  }
+
+  if (pinMode === 'confirm') {
+    if (pinBuffer !== pinFirst) {
+      pinBuffer = '';
+      updateDots(true);
+      document.getElementById('pin-err').textContent = "PINs don't match. Try again.";
+      document.getElementById('pin-card').classList.add('pin-shake');
+      setTimeout(() => { document.getElementById('pin-card').classList.remove('pin-shake'); updateDots(); }, 400);
+      pinMode = 'create';
+      pinFirst = '';
+      document.getElementById('pin-subtext').textContent = 'Set a 4-digit PIN to protect your data';
+      return;
+    }
+    // Save PIN
+    await fetch('/pin', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ deviceId, action:'create', pin: pinBuffer }) });
+    sessionStorage.setItem('zp_verified','1');
+    show('idle');
+    return;
+  }
+
+  if (pinMode === 'enter') {
+    const res = await fetch('/pin', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ deviceId, action:'verify', pin: pinBuffer }) });
+    const d = await res.json();
+    if (d.valid) {
+      sessionStorage.setItem('zp_verified','1');
+      show('idle');
+    } else {
+      pinBuffer = '';
+      updateDots(true);
+      document.getElementById('pin-err').textContent = 'Incorrect PIN. Try again.';
+      document.getElementById('pin-card').classList.add('pin-shake');
+      setTimeout(() => { document.getElementById('pin-card').classList.remove('pin-shake'); updateDots(); }, 400);
+    }
+  }
+}
+
+/* ══ Screens ══ */
+function show(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById('screen-' + id).classList.add('active');
+}
+
+/* ══ Toast ══ */
 let _tt;
 function toast(msg) {
   const el = document.getElementById('toast');
   el.innerHTML = `<i class="fas fa-circle-check" style="color:var(--gn)"></i>${msg}`;
   el.style.display = 'flex';
   clearTimeout(_tt);
-  _tt = setTimeout(() => el.style.display = 'none', 3000);
+  _tt = setTimeout(() => el.style.display='none', 3000);
 }
-
-/* ── Error ── */
 function showErr(msg) {
   const el = document.getElementById('err-box');
   el.innerHTML = `<i class="fas fa-triangle-exclamation" style="margin-right:8px"></i>${msg}`;
   el.style.display = 'block';
 }
-function hideErr() { document.getElementById('err-box').style.display = 'none'; }
+function hideErr() { document.getElementById('err-box').style.display='none'; }
 
-/* ── Screen switch ── */
-function show(id) {
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  document.getElementById('screen-' + id).classList.add('active');
-}
-
-/* ── Text helpers ── */
+/* ══ Text helpers ══ */
 function cleanTitle(t) {
   return (t||'')
     .replace(/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g,'')
@@ -202,9 +437,9 @@ function cleanTitle(t) {
 }
 function cleanContent(lines) {
   return (lines||[]).map(line => {
-    if (line === '') return '';
+    if (line==='') return '';
     let l = line.replace(/#/g,'').trim();
-    if (l.length > 0 && !/^(\p{Extended_Pictographic}|\p{Emoji_Presentation})/u.test(l))
+    if (l.length>0 && !/^(\p{Extended_Pictographic}|\p{Emoji_Presentation})/u.test(l))
       l = `${EMOJIS[Math.floor(Math.random()*EMOJIS.length)]} ${l}`;
     return l;
   });
@@ -219,13 +454,30 @@ function getLayout(title, content) {
   return s;
 }
 
-/* ── Build 1080×1920 card HTML (for capture) ── */
+/* ══ Filename from title (unique, no hashtag, _ separated) ══ */
+function titleToFilename(title) {
+  const words = cleanTitle(title)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .split(/\s+/)
+    .filter(w => w.length > 1)
+    .slice(0, 3);
+
+  let base = words.join('_') || 'zodiac_post';
+  let name = base;
+  let n = 1;
+  while (usedFilenames.has(name)) { name = `${base}_${n}`; n++; }
+  usedFilenames.add(name);
+  return name;
+}
+
+/* ══ Build 1080×1920 card HTML ══ */
 function buildCard(post) {
   const title   = cleanTitle(post.title);
   const content = cleanContent(post.content);
   const ly      = getLayout(title, content);
   const lines   = content.map(line => {
-    if (line === '') return `<div style="height:20px"></div>`;
+    if (line==='') return `<div style="height:20px"></div>`;
     const html = (line||'').replace(/\*\*(.*?)\*\*/g,'<span style="font-weight:900">$1</span>').replace(/#/g,'');
     return `<p style="font-size:${ly.cs}px;font-weight:500;line-height:${ly.lh};text-align:left;text-shadow:0 2px 4px rgba(0,0,0,.6);margin:0">${html}</p>`;
   }).join('');
@@ -235,13 +487,13 @@ function buildCard(post) {
   </div>`;
 }
 
-/* ── Build scaled preview HTML ── */
+/* ══ Build scaled preview ══ */
 function buildPreview(post, sc) {
   const title   = cleanTitle(post.title);
   const content = cleanContent(post.content);
   const ly      = getLayout(title, content);
   const lines   = content.map(line => {
-    if (line === '') return `<div style="height:${Math.round(20*sc)}px"></div>`;
+    if (line==='') return `<div style="height:${Math.round(20*sc)}px"></div>`;
     const html = (line||'').replace(/\*\*(.*?)\*\*/g,'<span style="font-weight:900">$1</span>').replace(/#/g,'');
     return `<p style="font-size:${(ly.cs*sc).toFixed(1)}px;font-weight:500;line-height:${ly.lh};margin:0;text-shadow:0 1px 2px rgba(0,0,0,.7)">${html}</p>`;
   }).join('');
@@ -251,9 +503,9 @@ function buildPreview(post, sc) {
   </div>`;
 }
 
-/* ── Build post item DOM ── */
+/* ══ Build post item ══ */
 function buildPostItem(post, i) {
-  const SC = 0.165;
+  const SC = 0.13;
   const w  = Math.round(1080 * SC);
   const h  = Math.round(1920 * SC);
   const div = document.createElement('div');
@@ -267,21 +519,21 @@ function buildPostItem(post, i) {
           ${buildPreview(post, SC)}
         </div>
         <div id="ov-${i}" class="overlay-spin">
-          <i class="far fa-clock" style="font-size:20px;color:var(--mu2)"></i>
+          <i class="far fa-clock" style="font-size:18px;color:var(--mu2)"></i>
           <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:3px;color:var(--mu2)">Queue</span>
         </div>
       </div>
     </div>
     <div class="action-bar" id="acts-${i}">
-      <div style="display:flex;flex-direction:column;align-items:center;gap:5px;color:var(--mu2)">
-        <i class="far fa-clock" style="font-size:17px"></i>
-        <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:2px">Queue</span>
+      <div class="act-btn queue">
+        <i class="far fa-clock" style="color:var(--mu2)"></i>
+        <span>Queue</span>
       </div>
     </div>`;
   return div;
 }
 
-/* ── Update post item state ── */
+/* ══ Update post state ══ */
 function updateItem(i) {
   const st   = rsts[i];
   const item = document.getElementById(`item-${i}`);
@@ -289,52 +541,56 @@ function updateItem(i) {
   const acts = document.getElementById(`acts-${i}`);
   if (!item) return;
 
-  if (st === 'done') item.classList.add('done');
+  if (st==='done') item.classList.add('done');
 
-  if (st === 'rend') {
-    ov.className = 'overlay-spin';
-    ov.innerHTML = `<i class="fas fa-circle-notch spin" style="font-size:26px;color:#60a5fa"></i>
+  if (st==='rend') {
+    ov.className='overlay-spin';
+    ov.innerHTML=`<i class="fas fa-circle-notch spin" style="font-size:24px;color:#60a5fa"></i>
       <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:3px;color:#93c5fd">Processing</span>`;
-    ov.style.display = 'flex';
-  } else if (st === 'fail') {
-    ov.className = 'overlay-fail';
-    ov.innerHTML = `<i class="fas fa-triangle-exclamation" style="font-size:22px;color:var(--rd)"></i>`;
-    ov.style.display = 'flex';
-  } else if (st === 'done') {
-    ov.style.display = 'none';
+    ov.style.display='flex';
+  } else if (st==='fail') {
+    ov.className='overlay-fail';
+    ov.innerHTML=`<i class="fas fa-triangle-exclamation" style="font-size:22px;color:var(--rd)"></i>`;
+    ov.style.display='flex';
+  } else if (st==='done') {
+    ov.style.display='none';
   }
 
-  if (st === 'done') {
-    acts.innerHTML = `
-      <button class="btn btn-icon" onclick="dlOne(${i})">
-        <i class="fas fa-download" style="color:var(--bl)"></i><span class="lbl">Save</span>
+  // Buttons: Share → Copy → Download (bigger)
+  if (st==='done') {
+    acts.innerHTML=`
+      <button class="act-btn" onclick="shareOne(${i})" title="Share">
+        <i class="fas fa-share-nodes" style="color:var(--gn)"></i>
+        <span>Share</span>
       </button>
-      <button class="btn btn-icon" onclick="shareOne(${i})">
-        <i class="fas fa-share-nodes" style="color:var(--gn)"></i><span class="lbl">Share</span>
+      <button class="act-btn" id="copy-${i}" onclick="copyTitle(${i})" title="Copy title">
+        <i class="fas fa-copy" style="color:var(--pu)"></i>
+        <span>Copy</span>
       </button>
-      <button class="btn btn-icon" id="copy-${i}" onclick="copyTitle(${i})">
-        <i class="fas fa-copy" style="color:#a78bfa"></i><span class="lbl">Title</span>
+      <button class="act-btn" onclick="dlOne(${i})" title="Download">
+        <i class="fas fa-download" style="color:var(--bl)"></i>
+        <span>Save</span>
       </button>`;
   }
 }
 
-/* ── Status bar ── */
+/* ══ Status bar ══ */
 function updateStatus() {
-  const done    = rsts.filter(s => s === 'done').length;
-  const allDone = done === posts.length && posts.length > 0;
-  document.getElementById('status-dot').style.background = allDone ? 'var(--bl)' : 'var(--gn)';
-  document.getElementById('status-dot').className = 'dot' + (allDone ? '' : ' blink');
+  const done    = rsts.filter(s=>s==='done').length;
+  const allDone = done===posts.length && posts.length>0;
+  document.getElementById('status-dot').style.background = allDone?'var(--bl)':'var(--gn)';
+  document.getElementById('status-dot').className = 'dot'+(allDone?'':' blink');
   document.getElementById('status-lbl').textContent = `${done} of ${posts.length} Rendered`;
-  document.getElementById('footer-bar').style.display = allDone ? 'block' : 'none';
+  document.getElementById('footer-bar').style.display = allDone?'block':'none';
   document.getElementById('dl-lbl').textContent = `DOWNLOAD ALL (${posts.length})`;
-  if (allDone) document.getElementById('post-list').style.paddingBottom = '100px';
+  if (allDone) document.getElementById('post-list').style.paddingBottom='100px';
 }
 
-/* ── Render post to PNG ── */
-function setRst(i, v) { rsts[i] = v; updateItem(i); updateStatus(); }
+/* ══ Render to PNG ══ */
+function setRst(i,v) { rsts[i]=v; updateItem(i); updateStatus(); }
 
 async function renderPost(i) {
-  setRst(i, 'rend');
+  setRst(i,'rend');
   try {
     await sleep(600);
     const el = document.getElementById(`cap-${i}`);
@@ -345,122 +601,146 @@ async function renderPost(i) {
       width:1080, height:1920, windowWidth:1080, windowHeight:1920
     });
     if (!cv.width) throw new Error('empty canvas');
-    await new Promise((res, rej) => {
-      cv.toBlob(blob => {
-        if (blob) { blobs[i] = { blob }; setRst(i,'done'); res(); }
+    await new Promise((res,rej)=>{
+      cv.toBlob(blob=>{
+        if(blob){ blobs[i]={blob}; setRst(i,'done'); res(); }
         else rej(new Error('blob fail'));
-      }, 'image/png');
+      },'image/png');
     });
-  } catch(e) {
-    console.error(e);
-    setRst(i, 'fail');
-  }
+  } catch(e) { console.error(e); setRst(i,'fail'); }
 }
 
-/* ── Batch processor ── */
 async function processNext() {
-  while (active.size < CONCUR && queue.length > 0) {
-    const i = queue.shift();
-    if (i === undefined) break;
+  while (active.size<CONCUR && queue.length>0) {
+    const i=queue.shift(); if(i===undefined) break;
     active.add(i);
     await sleep(60);
-    renderPost(i).then(() => { active.delete(i); processNext(); });
+    renderPost(i).then(()=>{ active.delete(i); processNext(); });
   }
 }
 
-/* ── GENERATE ── */
+/* ══ GENERATE ══ */
 async function generate() {
   const text = document.getElementById('inp-text').value.trim();
   if (!text) return;
   hideErr();
-
   const model = document.getElementById('sel-model').value;
   const btn   = document.getElementById('btn-gen');
-  btn.disabled = true;
-  btn.innerHTML = '<i class="fas fa-circle-notch spin"></i> PROCESSING…';
+  btn.disabled=true;
+  btn.innerHTML='<i class="fas fa-circle-notch spin"></i> PROCESSING…';
 
   try {
     const res = await fetch('/api', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, model })
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text, model})
     });
-
-    // Safely read body — guard against empty / non-JSON responses
     const raw = await res.text();
-    if (!raw || !raw.trim()) throw new Error(`Empty response (HTTP ${res.status}). Ensure AI binding variable is named exactly: AI`);
+    if (!raw||!raw.trim()) throw new Error(`Empty response (HTTP ${res.status}). Check AI binding named: AI`);
     let data;
-    try { data = JSON.parse(raw); }
-    catch(e) { throw new Error(`Server returned non-JSON: ${raw.slice(0, 120)}`); }
-
-    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    try { data=JSON.parse(raw); } catch(e) { throw new Error(`Server error: ${raw.slice(0,120)}`); }
+    if (!res.ok||data.error) throw new Error(data.error||`HTTP ${res.status}`);
     if (!data.posts?.length) throw new Error('No posts generated. Try simplifying your input.');
 
     posts  = data.posts;
     rsts   = new Array(posts.length).fill('wait');
     blobs  = new Array(posts.length).fill(null);
-    queue  = posts.map((_,i) => i);
+    queue  = posts.map((_,i)=>i);
     active = new Set();
+    usedFilenames = new Set();
 
     // Build capture zone
-    const zone = document.getElementById('capture-zone');
-    zone.innerHTML = posts.map((p,i) =>
+    document.getElementById('capture-zone').innerHTML = posts.map((p,i)=>
       `<div id="cap-${i}" style="width:1080px;height:1920px;background:#000;position:absolute;top:0;left:0">${buildCard(p)}</div>`
     ).join('');
 
     // Build result list
     const list = document.getElementById('list-inner');
-    list.innerHTML = '';
-    posts.forEach((p,i) => list.appendChild(buildPostItem(p,i)));
+    list.innerHTML='';
+    posts.forEach((p,i)=>list.appendChild(buildPostItem(p,i)));
     updateStatus();
     show('result');
     processNext();
 
+    // Save to history
+    saveHistory(posts);
+
   } catch(e) {
     showErr(e.message);
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = '<i class="fas fa-bolt"></i> GENERATE IMAGES';
+    btn.disabled=false;
+    btn.innerHTML='<i class="fas fa-bolt"></i> GENERATE IMAGES';
   }
 }
 
-/* ── Download / Share ── */
-async function dlOne(i) {
-  const b = blobs[i]?.blob; const p = posts[i];
-  if (!b || !p) return;
-  try { await navigator.clipboard.writeText(p.title); } catch(e) {}
-  triggerDl(b, `zodiac-${p.title.slice(0,14).replace(/[^a-z0-9]/gi,'-')}-${Date.now()}.png`);
-  toast('Image saved & title copied!');
+/* ══ Share — title only (no hashtag), image + title to FB / native share ══ */
+async function shareOne(i) {
+  const b = blobs[i]?.blob;
+  const p = posts[i];
+  if (!b||!p) return;
+
+  const title = cleanTitle(p.title); // clean title, NO hashtag
+
+  // Copy only the clean title to clipboard
+  try { await navigator.clipboard.writeText(title); } catch(e){}
+
+  const file = new File([b], `${titleToFilename ? usedFilenameOf(i) : 'zodiac'}.png`, {type:'image/png'});
+  if (navigator.share && navigator.canShare?.({files:[file]})) {
+    try {
+      await navigator.share({
+        files: [file],
+        title: title,
+        text: title        // ← title only, no hashtag
+      });
+      toast('Shared! Title copied.');
+    } catch(e) {
+      if (e.name!=='AbortError') toast('Share cancelled.');
+    }
+  } else {
+    toast('Title copied! Share not supported on this browser — use Save instead.');
+  }
 }
 
-async function shareOne(i) {
-  const b = blobs[i]?.blob; const p = posts[i];
-  if (!b || !p) return;
-  try { await navigator.clipboard.writeText(p.title); } catch(e) {}
-  const file = new File([b], `zodiac-${Date.now()}.png`, {type:'image/png'});
-  if (navigator.share && navigator.canShare?.({files:[file]})) {
-    try { await navigator.share({files:[file], title:p.title, text:`${p.title} #zodiac`}); toast('Shared!'); }
-    catch(e) { if (e.name !== 'AbortError') toast('Share failed.'); }
-  } else { toast('Sharing not supported — use Download.'); }
+// Map index to filename used during download
+const _fnMap = {};
+async function dlOne(i) {
+  const b = blobs[i]?.blob;
+  const p = posts[i];
+  if (!b||!p) return;
+  try { await navigator.clipboard.writeText(cleanTitle(p.title)); } catch(e){}
+  const fn = getFilenameForPost(i, p.title);
+  triggerDl(b, fn+'.png');
+  toast('Saved & title copied!');
+}
+
+function usedFilenameOf(i) {
+  return _fnMap[i] || (cleanTitle(posts[i]?.title||'').toLowerCase().replace(/\s+/g,'_').slice(0,20) || 'zodiac');
+}
+
+function getFilenameForPost(i, title) {
+  if (_fnMap[i]) return _fnMap[i];
+  const fn = titleToFilename(title);
+  _fnMap[i] = fn;
+  return fn;
 }
 
 async function copyTitle(i) {
   const p = posts[i]; if (!p) return;
-  try { await navigator.clipboard.writeText(p.title); } catch(e) {}
+  try { await navigator.clipboard.writeText(cleanTitle(p.title)); } catch(e){}
   const btn = document.getElementById(`copy-${i}`);
   if (btn) {
-    btn.innerHTML = `<i class="fas fa-check" style="color:var(--yw)"></i><span class="lbl">Done</span>`;
-    setTimeout(() => { btn.innerHTML=`<i class="fas fa-copy" style="color:#a78bfa"></i><span class="lbl">Title</span>`; }, 2000);
+    btn.innerHTML=`<i class="fas fa-check" style="color:var(--yw)"></i><span>Done</span>`;
+    setTimeout(()=>{btn.innerHTML=`<i class="fas fa-copy" style="color:var(--pu)"></i><span>Copy</span>`;},2000);
   }
   toast('Title copied!');
 }
 
 async function downloadAll() {
   toast('Starting batch download…');
-  for (let i = 0; i < blobs.length; i++) {
-    const b = blobs[i]; const p = posts[i];
-    if (b?.blob && p) {
-      triggerDl(b.blob, `zodiac-${p.title.slice(0,14).replace(/[^a-z0-9]/gi,'-')}-${i+1}.png`);
+  for (let i=0;i<blobs.length;i++) {
+    const b=blobs[i]; const p=posts[i];
+    if (b?.blob&&p) {
+      const fn = getFilenameForPost(i, p.title);
+      triggerDl(b.blob, fn+'.png');
       await sleep(500);
     }
   }
@@ -468,24 +748,100 @@ async function downloadAll() {
 }
 
 function triggerDl(blob, name) {
-  const url = URL.createObjectURL(blob);
-  const a = Object.assign(document.createElement('a'), { href:url, download:name });
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  const url=URL.createObjectURL(blob);
+  const a=Object.assign(document.createElement('a'),{href:url,download:name});
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 
-/* ── Reset ── */
+/* ══ History ══ */
+async function saveHistory(postsData) {
+  const deviceId = getDeviceId();
+  const label = cleanTitle(postsData[0]?.title||'Session') + (postsData.length>1?` +${postsData.length-1}`:'');
+  try {
+    await fetch('/history', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ deviceId, posts: postsData, timestamp: Date.now(), label })
+    });
+  } catch(e) { console.warn('History save failed', e); }
+}
+
+async function openHistory() {
+  document.getElementById('history-panel').classList.add('open');
+  document.getElementById('history-list').innerHTML='<div class="history-empty">Loading…</div>';
+  const deviceId = getDeviceId();
+  try {
+    const res = await fetch(`/history?deviceId=${deviceId}`);
+    const d   = await res.json();
+    renderHistory(d.sessions||[]);
+  } catch(e) {
+    document.getElementById('history-list').innerHTML=`<div class="history-empty" style="color:var(--rd)">Failed to load history</div>`;
+  }
+}
+
+function closeHistory() {
+  document.getElementById('history-panel').classList.remove('open');
+}
+
+function renderHistory(sessions) {
+  const list = document.getElementById('history-list');
+  if (!sessions.length) {
+    list.innerHTML='<div class="history-empty">No history yet.<br>Generated posts will appear here for 3 days.</div>';
+    return;
+  }
+  list.innerHTML = sessions.map(s => {
+    const date = new Date(s.timestamp).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    return `<div class="history-item" onclick="loadSession(${JSON.stringify(JSON.stringify(s.posts))})">
+      <div class="history-item-title">${escHtml(s.label||'Session')}</div>
+      <div class="history-item-meta">${date} · ${s.posts?.length||0} posts</div>
+      <button class="history-del" onclick="deleteSession(event,'${escHtml(s.key)}')"><i class="fas fa-xmark"></i></button>
+    </div>`;
+  }).join('');
+}
+
+function loadSession(jsonStr) {
+  closeHistory();
+  const loadedPosts = JSON.parse(jsonStr);
+  posts  = loadedPosts;
+  rsts   = new Array(posts.length).fill('wait');
+  blobs  = new Array(posts.length).fill(null);
+  queue  = posts.map((_,i)=>i);
+  active = new Set();
+  usedFilenames = new Set();
+
+  document.getElementById('capture-zone').innerHTML = posts.map((p,i)=>
+    `<div id="cap-${i}" style="width:1080px;height:1920px;background:#000;position:absolute;top:0;left:0">${buildCard(p)}</div>`
+  ).join('');
+  const list=document.getElementById('list-inner');
+  list.innerHTML='';
+  posts.forEach((p,i)=>list.appendChild(buildPostItem(p,i)));
+  updateStatus();
+  show('result');
+  processNext();
+}
+
+async function deleteSession(e, key) {
+  e.stopPropagation();
+  await fetch('/history',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});
+  openHistory();
+}
+
+function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+
+/* ══ Reset ══ */
 function reset() {
-  posts=[]; rsts=[]; blobs=[]; queue=[]; active=new Set();
-  document.getElementById('capture-zone').innerHTML = '';
-  document.getElementById('list-inner').innerHTML = '';
-  document.getElementById('inp-text').value = '';
-  document.getElementById('post-list').style.paddingBottom = '20px';
+  posts=[]; rsts=[]; blobs=[]; queue=[]; active=new Set(); usedFilenames=new Set();
+  document.getElementById('capture-zone').innerHTML='';
+  document.getElementById('list-inner').innerHTML='';
+  document.getElementById('inp-text').value='';
+  document.getElementById('post-list').style.paddingBottom='16px';
   hideErr();
   show('idle');
 }
 
-function sleep(ms) { return new Promise(r => setTimeout(r,ms)); }
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+
+/* ══ Init ══ */
+initPin();
 </script>
 </body>
 </html>
