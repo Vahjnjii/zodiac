@@ -846,25 +846,54 @@ function triggerDl(blob, name) {
 /* ══ History ══ */
 async function saveHistory(postsData) {
   const deviceId = getDeviceId();
-  const label = cleanTitle(postsData[0]?.title||'Session');
-  const count = postsData.length;
+  if (!deviceId || deviceId === 'anon') {
+    console.warn('saveHistory: no deviceId, skipping');
+    return;
+  }
+
+  // Save cleaned posts so they render consistently when reloaded
+  const cleanedPosts = postsData.map(p => ({
+    title:   cleanTitle(p.title),
+    content: cleanContent(p.content)
+  }));
+
+  const label = cleanedPosts[0]?.title || 'Session';
+  const count = cleanedPosts.length;
+  const payload = { deviceId, posts: cleanedPosts, timestamp: Date.now(), label, count };
+
   try {
-    await fetch('/history', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ deviceId, posts:postsData, timestamp:Date.now(), label, count })
+    const res  = await fetch('/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
     });
-  } catch(e) { console.warn('History save failed', e); }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      console.error('History save error:', data.error || res.status);
+      // Show error in history panel if open
+      toast('⚠️ History not saved: ' + (data.error || 'KV not configured'));
+    }
+  } catch(e) {
+    console.error('History fetch failed:', e);
+    toast('⚠️ History save failed: ' + e.message);
+  }
 }
 
 async function openHistory() {
   document.getElementById('history-panel').classList.add('open');
   document.getElementById('history-list').innerHTML='<div class="history-empty"><i class="fas fa-circle-notch spin" style="font-size:20px;margin-bottom:8px;display:block"></i>Loading…</div>';
+  const deviceId = getDeviceId();
+  if (!deviceId || deviceId === 'anon') {
+    document.getElementById('history-list').innerHTML='<div class="history-empty" style="color:var(--rd)">Sign in to view history.</div>';
+    return;
+  }
   try {
-    const res = await fetch(`/history?deviceId=${getDeviceId()}`);
-    const d   = await res.json();
+    const res  = await fetch(`/history?deviceId=${encodeURIComponent(deviceId)}`);
+    const d    = await res.json();
+    if (d.error) throw new Error(d.error);
     renderHistory(d.sessions||[]);
   } catch(e) {
-    document.getElementById('history-list').innerHTML=`<div class="history-empty" style="color:var(--rd)">Failed to load history</div>`;
+    document.getElementById('history-list').innerHTML=`<div class="history-empty" style="color:var(--rd)">Error: ${e.message}</div>`;
   }
 }
 
