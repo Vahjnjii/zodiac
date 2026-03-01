@@ -29,19 +29,20 @@ export async function onRequest(context) {
 
     if (!text) return json({ error: 'No text provided' }, 400, headers);
 
-    const prompt = `You are a JSON formatter. Return ONLY a JSON object. No explanation, no markdown, no code fences.
+    const prompt = `Return ONLY valid JSON. No explanation. No markdown. No code fences.
 
-Format zodiac text into this structure:
-{"posts":[{"title":"string","content":["string"]}]}
+Split the input into posts. Each post has a title (first line) and content (remaining lines).
+Copy every single character EXACTLY — do not change words, emojis, symbols, punctuation, spacing, or formatting.
+Empty lines between posts become new post boundaries.
+
+JSON structure:
+{"posts":[{"title":"exact title text","content":["exact line 1","exact line 2",""]}]}
 
 Rules:
-1. Split into separate posts by title
-2. Title: remove emojis * # — keep exact words
-3. Every content line must start with an emoji
-4. Bold zodiac sign names: **Aries**
-5. 1-2 signs per line = one line: "✨ **Aries**: explanation"
-6. 3+ signs per line = three items: ["🌟 **Aries**, **Leo**, **Virgo**", "🔮 explanation", ""]
-7. Remove all # characters from lines
+- title = first line of each post, copied exactly
+- content = all remaining lines, each line is one array item, copied exactly  
+- empty line = empty string "" in content array
+- do NOT add emojis, do NOT remove emojis, do NOT rephrase anything
 
 INPUT:
 ${text}
@@ -115,13 +116,13 @@ JSON:`;
     if (method === 'POST') {
       let body;
       try { body = await request.json(); } catch(e) { return json({ error: 'Invalid JSON body' }, 400, headers); }
-      const { deviceId, posts, timestamp, label, count } = body;
+      const { deviceId, posts, timestamp, label, count, sessionKey } = body;
       if (!deviceId) return json({ error: 'Missing deviceId' }, 400, headers);
       if (!posts || !Array.isArray(posts) || posts.length === 0) return json({ error: 'Missing or empty posts' }, 400, headers);
       try {
         const ts  = timestamp || Date.now();
         const key = `session:${deviceId}:${ts}`;
-        const val = JSON.stringify({ posts, timestamp: ts, label: label || '', count: count || posts.length });
+        const val = JSON.stringify({ posts, timestamp: ts, label: label || '', count: count || posts.length, sessionKey: sessionKey || '' });
         await env.KV.put(key, val, { expirationTtl: TTL });
         return json({ success: true, key }, 200, headers);
       } catch(e) {
