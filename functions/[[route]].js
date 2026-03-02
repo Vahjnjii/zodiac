@@ -1,5 +1,10 @@
-// Cloudflare Pages — single catch-all handler
-// Bindings needed: AI (Workers AI) + KV (KV Namespace)
+// ═══════════════════════════════════════════════════════════
+// LUMA — Cloudflare Pages Functions
+// Bindings required:
+//   AI              → Workers AI
+//   KV              → KV Namespace
+//   GOOGLE_CLIENT_ID → Secret (Environment Variable)
+// ═══════════════════════════════════════════════════════════
 
 const TTL = 60 * 60 * 24 * 3; // 3 days
 
@@ -8,174 +13,302 @@ export async function onRequest(context) {
   const url    = new URL(request.url);
   const path   = url.pathname;
   const method = request.method;
+  const H      = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 
-  // ── CORS for local dev ──
-  const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
+  if (method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: {
+      ...H, 'Access-Control-Allow-Methods': 'GET,POST,DELETE',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    }});
+  }
 
-  // ════════════════════════════════════════
-  // POST /api  →  AI formatting
-  // ════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════
+  // POST /api  →  AI parses text, creates job, renders SVGs in background
+  // ═══════════════════════════════════════════════════════
   if (path === '/api' && method === 'POST') {
-    if (!env.AI) return json({ error: 'AI binding missing. Add binding variable name: AI' }, 500, headers);
+    if (!env.AI) return json({ error: 'AI binding missing — name it: AI' }, 500, H);
+    if (!env.KV) return json({ error: 'KV binding missing — name it: KV' }, 500, H);
 
-    let text, model;
-    try {
-      const body = await request.json();
-      text  = (body?.text || '').trim();
-      model = body?.model || '@cf/meta/llama-3.1-8b-instruct-fast';
-    } catch (e) {
-      return json({ error: 'Invalid request body' }, 400, headers);
-    }
+    let body;
+    try { body = await request.json(); }
+    catch { return json({ error: 'Invalid JSON body' }, 400, H); }
 
-    if (!text) return json({ error: 'No text provided' }, 400, headers);
+    const text     = (body.text     || '').trim();
+    const model    = body.model     || '@cf/meta/llama-3.1-8b-instruct-fast';
+    const deviceId = (body.deviceId || '').trim();
+    const template = body.template  || 'imggen';
 
+    if (!text)     return json({ error: 'No text provided' }, 400, H);
+    if (!deviceId) return json({ error: 'Not signed in' }, 401, H);
+
+    // ── AI: parse text into structured posts ──
     const prompt = `Return ONLY valid JSON. No explanation. No markdown. No code fences.
 
-Split the input into posts. Each post has a title (first line) and content (remaining lines).
-Copy every single character EXACTLY — do not change words, emojis, symbols, punctuation, spacing, or formatting.
-Empty lines between posts become new post boundaries.
+Your job: split the input into separate posts and structure as JSON.
+CRITICAL: Copy every word, emoji, symbol, and punctuation EXACTLY as-is. Do not change, add, or remove anything.
 
-JSON structure:
-{"posts":[{"title":"exact title text","content":["exact line 1","exact line 2",""]}]}
+Output format:
+{"posts":[{"title":"exact first line","content":["exact line","exact line",""]}]}
 
-Rules:
 - title = first line of each post, copied exactly
-- content = all remaining lines, each line is one array item, copied exactly  
-- empty line = empty string "" in content array
-- do NOT add emojis, do NOT remove emojis, do NOT rephrase anything
+- content = remaining lines, one string per element, copied exactly
+- empty lines become "" in content array
+- posts separated by blank lines or clear new titles
 
 INPUT:
 ${text}
 
 JSON:`;
 
-    let aiResult;
+    let aiRaw = '';
     try {
-      aiResult = await env.AI.run(model, { prompt, max_tokens: 4096, temperature: 0.1 });
-    } catch (e) {
-      return json({ error: `AI error: ${e.message}` }, 500, headers);
+      const r = await env.AI.run(model, { prompt, max_tokens: 4096, temperature: 0.1 });
+      if      (typeof r === 'string')   aiRaw = r;
+      else if (r?.response)             aiRaw = r.response;
+      else if (r?.result?.response)     aiRaw = r.result.response;
+      else return json({ error: 'Unexpected AI response shape' }, 500, H);
+    } catch(e) {
+      return json({ error: `AI error: ${e.message}` }, 500, H);
     }
 
-    let raw = '';
-    if      (typeof aiResult === 'string')      raw = aiResult;
-    else if (aiResult?.response)                raw = aiResult.response;
-    else if (aiResult?.result?.response)        raw = aiResult.result.response;
-    else if (aiResult?.generations?.[0]?.text)  raw = aiResult.generations[0].text;
-    else return json({ error: `Unexpected AI response shape: ${JSON.stringify(aiResult).slice(0,200)}` }, 500, headers);
+    aiRaw = aiRaw.replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/i,'').trim();
+    const si = aiRaw.indexOf('{'), ei = aiRaw.lastIndexOf('}');
+    if (si === -1) return json({ error: `No JSON in AI response. Got: "${aiRaw.slice(0,200)}"` }, 500, H);
 
-    raw = raw.replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/i,'').trim();
-    if (!raw) return json({ error: 'Model returned empty response' }, 500, headers);
-
-    const fB = raw.indexOf('{'), fBr = raw.indexOf('[');
-    let start = fB === -1 && fBr === -1 ? -1 : fB === -1 ? fBr : fBr === -1 ? fB : Math.min(fB, fBr);
-    if (start === -1) return json({ error: `No JSON found. Got: "${raw.slice(0,200)}"` }, 500, headers);
-
-    const end     = Math.max(raw.lastIndexOf('}'), raw.lastIndexOf(']'));
-    const jsonStr = repairJSON(raw.slice(start, end + 1));
-
-    let parsed;
-    try { parsed = JSON.parse(jsonStr); }
-    catch (e) {
-      const posts = extractFallback(raw);
-      if (posts.length > 0) return json({ posts }, 200, headers);
-      return json({ error: `Parse failed. Model said: "${raw.slice(0,300)}"` }, 500, headers);
+    let posts;
+    try {
+      const p = JSON.parse(repairJSON(aiRaw.slice(si, ei + 1)));
+      posts = Array.isArray(p) ? p : (p.posts || []);
+    } catch {
+      posts = extractFallback(aiRaw);
     }
+    if (!posts.length) return json({ error: 'No posts parsed. Try again.' }, 500, H);
 
-    const posts = Array.isArray(parsed) ? parsed : (parsed.posts || []);
-    if (!posts.length) return json({ error: 'Empty posts. Try again.' }, 500, headers);
-    return json({ posts }, 200, headers);
+    // ── Create job record in KV ──
+    const ts    = Date.now();
+    const jobId = `job:${deviceId}:${template}:${ts}`;
+    await env.KV.put(jobId, JSON.stringify({
+      status: 'processing', total: posts.length, done: 0,
+      label:  (posts[0]?.title || 'Session').trim().slice(0, 80),
+      timestamp: ts, template, deviceId, results: [],
+    }), { expirationTtl: TTL });
+
+    // ── Respond immediately, then process SVGs in background ──
+    const response = json({ jobId, total: posts.length }, 200, H);
+
+    context.waitUntil((async () => {
+      const results = [];
+      for (let i = 0; i < posts.length; i++) {
+        try {
+          results.push({
+            title:   (posts[i].title   || '').trim(),
+            content: (posts[i].content || []),
+            svg:     generateSVG(posts[i]),
+          });
+          const cur = await env.KV.get(jobId, { type: 'json' });
+          if (!cur) break; // deleted while processing
+          await env.KV.put(jobId, JSON.stringify({
+            ...cur, done: i + 1, results,
+            status: i === posts.length - 1 ? 'done' : 'processing',
+          }), { expirationTtl: TTL });
+        } catch(err) {
+          console.error(`SVG gen error post ${i}:`, err.message);
+        }
+      }
+    })());
+
+    return response;
   }
 
-  // ════════════════════════════════════════
-  // GET    /history?deviceId=x  → { sessions }
-  // POST   /history             → save session
-  // DELETE /history             → delete session
-  // ════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════
+  // GET /api/job?jobId=x  →  poll job (returns results so far)
+  // ═══════════════════════════════════════════════════════
+  if (path === '/api/job' && method === 'GET') {
+    if (!env.KV) return json({ error: 'KV binding missing' }, 500, H);
+    const jobId = url.searchParams.get('jobId');
+    if (!jobId) return json({ error: 'No jobId' }, 400, H);
+    try {
+      const job = await env.KV.get(jobId, { type: 'json' });
+      if (!job) return json({ status: 'expired', results: [], done: 0, total: 0 }, 200, H);
+      return json(job, 200, H);
+    } catch(e) {
+      return json({ error: e.message }, 500, H);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // /history  →  GET list sessions   DELETE remove session
+  // ═══════════════════════════════════════════════════════
   if (path === '/history') {
-    if (!env.KV) return json({ error: 'KV binding missing. Add binding variable name: KV' }, 500, headers);
+    if (!env.KV) return json({ error: 'KV binding missing' }, 500, H);
 
     if (method === 'GET') {
       const deviceId = url.searchParams.get('deviceId');
-      const template = url.searchParams.get('template') || '';
-      if (!deviceId) return json({ error: 'No deviceId provided' }, 400, headers);
+      const template = url.searchParams.get('template') || 'imggen';
+      if (!deviceId) return json({ error: 'No deviceId' }, 400, H);
       try {
-        // Prefix includes template so each template has isolated history
-        const prefix   = template ? `session:${deviceId}:${template}:` : `session:${deviceId}:`;
-        const list     = await env.KV.list({ prefix });
+        const list = await env.KV.list({ prefix: `job:${deviceId}:${template}:` });
         const sessions = [];
         for (const key of list.keys) {
           try {
-            const data = await env.KV.get(key.name, { type: 'json' });
-            if (data) sessions.push({ ...data, key: key.name });
-          } catch(e) { /* skip bad entries */ }
+            const d = await env.KV.get(key.name, { type: 'json' });
+            if (d) sessions.push({
+              jobId:     key.name,
+              label:     d.label || 'Session',
+              total:     d.total || 0,
+              done:      d.done  || 0,
+              status:    d.status,
+              timestamp: d.timestamp,
+            });
+          } catch {}
         }
-        sessions.sort((a, b) => (b.timestamp||0) - (a.timestamp||0));
-        return json({ sessions }, 200, headers);
+        sessions.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        return json({ sessions }, 200, H);
       } catch(e) {
-        return json({ error: `KV read failed: ${e.message}` }, 500, headers);
-      }
-    }
-
-    if (method === 'POST') {
-      let body;
-      try { body = await request.json(); } catch(e) { return json({ error: 'Invalid JSON body' }, 400, headers); }
-      const { deviceId, posts, timestamp, label, count, sessionKey } = body;
-      if (!deviceId) return json({ error: 'Missing deviceId' }, 400, headers);
-      if (!posts || !Array.isArray(posts) || posts.length === 0) return json({ error: 'Missing or empty posts' }, 400, headers);
-      try {
-        const ts  = timestamp || Date.now();
-        const tmpl = body.template || 'default';
-        const key = `session:${deviceId}:${tmpl}:${ts}`;
-        const val = JSON.stringify({ posts, timestamp: ts, label: label || '', count: count || posts.length, sessionKey: sessionKey || '' });
-        await env.KV.put(key, val, { expirationTtl: TTL });
-        return json({ success: true, key }, 200, headers);
-      } catch(e) {
-        return json({ error: `KV write failed: ${e.message}` }, 500, headers);
+        return json({ error: `KV error: ${e.message}` }, 500, H);
       }
     }
 
     if (method === 'DELETE') {
-      const { key } = await request.json();
-      if (!key) return json({ error: 'No key' }, 400, headers);
-      await env.KV.delete(key);
-      return json({ success: true }, 200, headers);
+      let body;
+      try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, H); }
+      const { jobId } = body;
+      if (!jobId) return json({ error: 'No jobId' }, 400, H);
+      await env.KV.delete(jobId).catch(() => {});
+      return json({ success: true }, 200, H);
     }
   }
 
-  // ════════════════════════════════════════
-  // GET /config  →  returns public config (Google Client ID from secret)
-  // ════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════
+  // GET /config  →  serve Google Client ID from secret
+  // ═══════════════════════════════════════════════════════
   if (path === '/config' && method === 'GET') {
-    return json({
-      googleClientId: env.GOOGLE_CLIENT_ID || ''
-    }, 200, headers);
+    return json({ googleClientId: env.GOOGLE_CLIENT_ID || '' }, 200, H);
   }
 
-  // ── Pass through to static files (index.html etc) ──
   return context.next();
 }
 
-// ── Helpers ──
-function json(data, status = 200, headers = {}) {
-  return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', ...headers } });
+// ── JSON helper ─────────────────────────────────────────
+function json(data, status, headers) {
+  return new Response(JSON.stringify(data), {
+    status, headers: { 'Content-Type': 'application/json', ...headers },
+  });
+}
+
+// ── SVG Image Generator ─────────────────────────────────
+// Generates a 1080×1920 SVG entirely server-side.
+// No browser needed — stored in KV, served as data URI.
+function generateSVG(post) {
+  const W = 1080, H = 1920, PX = 92;
+  const CW = W - PX * 2; // 896px usable width
+
+  const title   = (post.title   || '').trim();
+  const content = (post.content || []);
+
+  // Adaptive font sizing
+  const len = title.length + content.join('').length;
+  let ts, bs, tlh, blh, gap;
+  if      (len < 120) { ts=76; bs=50; tlh=104; blh=72; gap=60; }
+  else if (len < 250) { ts=68; bs=45; tlh= 94; blh=66; gap=54; }
+  else if (len < 420) { ts=60; bs=40; tlh= 84; blh=58; gap=48; }
+  else if (len < 620) { ts=52; bs=36; tlh= 74; blh=52; gap=42; }
+  else                { ts=44; bs=32; tlh= 64; blh=46; gap=36; }
+
+  // Chars per line (avg char ≈ 0.54× font size for sans-serif)
+  const tCPL = Math.floor(CW / (ts * 0.54));
+  const bCPL = Math.floor(CW / (bs * 0.54));
+
+  const titleLines = wrap(title, tCPL);
+
+  const bodyLines = [];
+  for (const line of content) {
+    if (!(line || '').trim()) {
+      bodyLines.push({ t: '', gap: true });
+    } else {
+      for (const w of wrap(line, bCPL)) bodyLines.push({ t: w, gap: false });
+    }
+  }
+
+  // Calculate block height → vertical center
+  const titleH = titleLines.length * tlh;
+  const bodyH  = bodyLines.reduce((s, l) => s + (l.gap ? blh * 0.5 : blh), 0);
+  const totalH = titleH + (bodyLines.length ? gap + bodyH : 0);
+  let y = Math.max(PX + ts, Math.floor((H - totalH) / 2) + ts);
+
+  const els = [];
+
+  // Title
+  for (const line of titleLines) {
+    els.push(`<text x="${PX}" y="${y}" font-family="ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="${ts}" font-weight="800" fill="#FFFFFF">${x(line)}</text>`);
+    y += tlh;
+  }
+
+  // Accent line between title and body
+  if (bodyLines.length) {
+    els.push(`<rect x="${PX}" y="${y + Math.floor(gap * 0.3)}" width="40" height="3" rx="2" fill="rgba(139,92,246,0.6)"/>`);
+    y += gap;
+  }
+
+  // Body
+  for (const line of bodyLines) {
+    if (!line.gap) {
+      els.push(`<text x="${PX}" y="${y}" font-family="ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="${bs}" font-weight="400" fill="rgba(255,255,255,0.78)">${x(line.t)}</text>`);
+    }
+    y += line.gap ? blh * 0.5 : blh;
+  }
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="g" x1="0" y1="0" x2="${W}" y2="${H}" gradientUnits="userSpaceOnUse">
+    <stop offset="0%" stop-color="#06020f"/>
+    <stop offset="100%" stop-color="#00091a"/>
+  </linearGradient>
+</defs>
+<rect width="${W}" height="${H}" fill="url(#g)"/>
+${els.join('\n')}
+</svg>`;
+}
+
+function wrap(text, cpl) {
+  if (!text) return [''];
+  const words = text.split(' ');
+  const lines = [];
+  let cur = '';
+  for (const word of words) {
+    const test = cur ? `${cur} ${word}` : word;
+    if (test.length > cpl && cur) { lines.push(cur); cur = word; }
+    else cur = test;
+  }
+  if (cur) lines.push(cur);
+  return lines.length ? lines : [''];
+}
+
+function x(s) { // XML/SVG escape
+  return (s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function repairJSON(str) {
-  try { JSON.parse(str); return str; } catch (_) {}
+  try { JSON.parse(str); return str; } catch {}
   let s = str.replace(/,\s*$/, '');
-  let braces = 0, brackets = 0, inStr = false, esc = false;
-  for (const ch of s) {
-    if (esc)  { esc = false; continue; }
-    if (ch === '\\' && inStr) { esc = true; continue; }
-    if (ch === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (ch === '{') braces++;   if (ch === '}') braces--;
-    if (ch === '[') brackets++; if (ch === ']') brackets--;
+  let b = 0, br = 0, inS = false, esc = false;
+  for (const c of s) {
+    if (esc) { esc = false; continue; }
+    if (c === '\\' && inS) { esc = true; continue; }
+    if (c === '"') { inS = !inS; continue; }
+    if (inS) continue;
+    if (c === '{') b++;  if (c === '}') b--;
+    if (c === '[') br++; if (c === ']') br--;
   }
-  if (inStr) s += '"';
+  if (inS) s += '"';
   s = s.replace(/,\s*$/, '');
-  while (brackets > 0) { s += ']'; brackets--; }
-  while (braces > 0)   { s += '}'; braces--; }
+  while (br-- > 0) s += ']';
+  while (b--  > 0) s += '}';
   return s;
 }
 
@@ -184,7 +317,7 @@ function extractFallback(raw) {
   const re = /"title"\s*:\s*"([^"]+)"[^}]*?"content"\s*:\s*(\[[^\]]+\])/gs;
   let m;
   while ((m = re.exec(raw)) !== null) {
-    try { posts.push({ title: m[1], content: JSON.parse(m[2]) }); } catch (_) {}
+    try { posts.push({ title: m[1], content: JSON.parse(m[2]) }); } catch {}
   }
   return posts;
 }
