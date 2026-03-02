@@ -225,6 +225,7 @@ JSON:`;
           'Accept': 'application/vnd.github+json',
           'Content-Type': 'application/json',
           'X-GitHub-Api-Version': '2022-11-28',
+          'User-Agent': 'LUMA-App',
         },
         body: JSON.stringify(ghPayload),
       });
