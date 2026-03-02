@@ -23,7 +23,7 @@ export async function onRequest(context) {
   }
 
   // ═══════════════════════════════════════════════════════
-  // POST /api  →  AI parses text, creates job, renders SVGs in background
+  // POST /api  →  AI parses text → job → SVGs in background
   // ═══════════════════════════════════════════════════════
   if (path === '/api' && method === 'POST') {
     if (!env.AI) return json({ error: 'AI binding missing — name it: AI' }, 500, H);
@@ -41,23 +41,37 @@ export async function onRequest(context) {
     if (!text)     return json({ error: 'No text provided' }, 400, H);
     if (!deviceId) return json({ error: 'Not signed in' }, 401, H);
 
-    // ── AI: parse text into structured posts, with bold markers ──
+    // ── AI prompt ──
     const prompt = `Return ONLY valid JSON. No explanation. No markdown. No code fences.
 
-Your job: split the input into separate posts and structure as JSON.
-CRITICAL rules:
-1. Copy every word, emoji, symbol, and punctuation EXACTLY as-is from the input.
-2. Wrap IMPORTANT words in **double asterisks** for bold emphasis. Important = zodiac sign names, key nouns, planet names, numbers/dates, power words like "strength", "success", "love", action verbs at start of bullet points.
-3. Do NOT wrap every word — only genuinely important keywords deserve bold.
-4. Keep all emojis exactly as they appear in the input.
+Task: Split the input into separate posts and structure as JSON.
 
-Output format:
-{"posts":[{"title":"first line exactly","content":["line with **bold** words","next line",""]}]}
+CRITICAL RULES — follow exactly:
+1. REMOVE any post/section numbering from titles. Examples to strip:
+   - "1. Aries" → title becomes "Aries"
+   - "Post 1: Cancer" → title becomes "Cancer"
+   - "第一：白羊座" → title becomes "白羊座"
+   - "1)" / "1:" / "(1)" prefix → strip it entirely
+   The number is a reference marker, NOT part of the title.
 
-- title = first line of each post, copied exactly (you may bold key words in title too)
-- content = remaining lines, one string per element
-- empty lines become "" in content array
-- posts are separated by blank lines or clear new topic titles
+2. Copy every word, emoji, symbol, punctuation from the input EXACTLY — no changes, no additions.
+
+3. Wrap IMPORTANT words in **double asterisks** for bold:
+   - Zodiac sign names (Aries, Taurus, Gemini, Cancer, Leo, Virgo, Libra, Scorpio, Sagittarius, Capricorn, Aquarius, Pisces and Chinese equivalents like 白羊座, 金牛座 etc.)
+   - Planet names (Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune)
+   - Key power words: strength, love, success, wealth, abundance, growth, clarity
+   - Numbers/dates that are significant
+   Do NOT bold every word — only genuinely important keywords.
+
+4. Keep all emojis exactly as they appear.
+
+Output format (no other text):
+{"posts":[{"title":"actual title without numbering","content":["line with **bold** words","next line",""]}]}
+
+Rules:
+- title = first meaningful line of each post, with numbering stripped
+- content = all remaining lines, one string per element, empty lines become ""
+- Posts are separated by blank lines or new numbered sections
 
 INPUT:
 ${text}
@@ -66,10 +80,10 @@ JSON:`;
 
     let aiRaw = '';
     try {
-      const r = await env.AI.run(model, { prompt, max_tokens: 4096, temperature: 0.15 });
-      if      (typeof r === 'string')   aiRaw = r;
-      else if (r?.response)             aiRaw = r.response;
-      else if (r?.result?.response)     aiRaw = r.result.response;
+      const r = await env.AI.run(model, { prompt, max_tokens: 4096, temperature: 0.1 });
+      if      (typeof r === 'string') aiRaw = r;
+      else if (r?.response)           aiRaw = r.response;
+      else if (r?.result?.response)   aiRaw = r.result.response;
       else return json({ error: 'Unexpected AI response shape' }, 500, H);
     } catch(e) {
       return json({ error: `AI error: ${e.message}` }, 500, H);
@@ -88,32 +102,49 @@ JSON:`;
     }
     if (!posts.length) return json({ error: 'No posts parsed. Try again.' }, 500, H);
 
+    // ── Post-process every post ──
+    // 1. Strip any remaining post numbers the AI missed
+    // 2. Auto-bold zodiac signs missed by the AI
+    posts = posts.map(p => ({
+      title:   ensureZodiacBold(stripPostNumber(p.title || '')),
+      content: (p.content || []).map(line =>
+        line ? ensureZodiacBold(line) : line
+      ),
+    }));
+
     // ── Create job record in KV ──
     const ts    = Date.now();
     const jobId = `job:${deviceId}:${template}:${ts}`;
+    const cleanLabel = cleanText(posts[0]?.title || 'Session').slice(0, 80);
+
     await env.KV.put(jobId, JSON.stringify({
       status: 'processing', total: posts.length, done: 0,
-      label:  (posts[0]?.title || 'Session').replace(/\*\*/g,'').trim().slice(0, 80),
+      label:  cleanLabel,
       timestamp: ts, template, deviceId, results: [],
     }), { expirationTtl: TTL });
 
-    // ── Respond immediately, then process SVGs in background ──
+    // ── Respond immediately; render SVGs in background ──
     const response = json({ jobId, total: posts.length }, 200, H);
 
     context.waitUntil((async () => {
       const results = [];
       for (let i = 0; i < posts.length; i++) {
         try {
+          const post = posts[i];
+          const cleanTitle = cleanText(post.title);
           results.push({
-            title:   (posts[i].title   || '').replace(/\*\*/g,'').trim(),
-            content: (posts[i].content || []),
-            svg:     generateSVG(posts[i]),
+            title:   cleanTitle,   // plain text title, always stored
+            content: post.content,
+            svg:     generateSVG(post),
           });
           const cur = await env.KV.get(jobId, { type: 'json' });
-          if (!cur) break;
+          if (!cur) break; // deleted mid-process
           await env.KV.put(jobId, JSON.stringify({
-            ...cur, done: i + 1, results,
-            status: i === posts.length - 1 ? 'done' : 'processing',
+            ...cur,
+            done:    i + 1,
+            total:   posts.length,  // always keep total correct
+            results,
+            status:  i === posts.length - 1 ? 'done' : 'processing',
           }), { expirationTtl: TTL });
         } catch(err) {
           console.error(`SVG gen error post ${i}:`, err.message);
@@ -125,7 +156,7 @@ JSON:`;
   }
 
   // ═══════════════════════════════════════════════════════
-  // GET /api/job?jobId=x  →  poll job (returns results so far)
+  // GET /api/job?jobId=x
   // ═══════════════════════════════════════════════════════
   if (path === '/api/job' && method === 'GET') {
     if (!env.KV) return json({ error: 'KV binding missing' }, 500, H);
@@ -141,7 +172,7 @@ JSON:`;
   }
 
   // ═══════════════════════════════════════════════════════
-  // /history  →  GET list sessions   DELETE remove session
+  // /history
   // ═══════════════════════════════════════════════════════
   if (path === '/history') {
     if (!env.KV) return json({ error: 'KV binding missing' }, 500, H);
@@ -151,7 +182,7 @@ JSON:`;
       const template = url.searchParams.get('template') || 'imggen';
       if (!deviceId) return json({ error: 'No deviceId' }, 400, H);
       try {
-        const list = await env.KV.list({ prefix: `job:${deviceId}:${template}:` });
+        const list     = await env.KV.list({ prefix: `job:${deviceId}:${template}:` });
         const sessions = [];
         for (const key of list.keys) {
           try {
@@ -184,7 +215,7 @@ JSON:`;
   }
 
   // ═══════════════════════════════════════════════════════
-  // GET /config  →  serve Google Client ID from secret
+  // GET /config
   // ═══════════════════════════════════════════════════════
   if (path === '/config' && method === 'GET') {
     return json({ googleClientId: env.GOOGLE_CLIENT_ID || '' }, 200, H);
@@ -201,83 +232,100 @@ function json(data, status, headers) {
 }
 
 // ══════════════════════════════════════════════════════════
+// TEXT HELPERS
+// ══════════════════════════════════════════════════════════
+
+// Strip leading post numbers: "1.", "1:", "1)", "(1)", "Post 1:", "第一：" etc.
+function stripPostNumber(title) {
+  return (title || '')
+    .replace(/^\s*(?:post\s*)?\d+\s*[.:\)]\s*/i, '')   // 1. / 1: / 1) / Post 1:
+    .replace(/^\s*\(\d+\)\s*/,                '')        // (1)
+    .replace(/^\s*第\s*[\d一二三四五六七八九十百]+\s*[：:条篇部张节]\s*/i, '') // 第一：
+    .replace(/^\s*#+\s*/,                      '')        // ## markdown headings
+    .trim();
+}
+
+// Remove ** markers to get plain text
+function cleanText(t) {
+  return (t || '').replace(/\*\*/g, '').trim();
+}
+
+// All zodiac signs (English + Chinese + Japanese + Spanish)
+const ZODIAC_RE = /(?<!\*\*)(白羊座|牡羊座|金牛座|雙子座|双子座|巨蟹座|獅子座|狮子座|處女座|处女座|天秤座|天蠍座|天蝎座|射手座|摩羯座|水瓶座|雙魚座|双鱼座|牡牛座|蟹座|乙女座|蠍座|山羊座|魚座|Aries|Taurus|Gemini|Cancer|Leo|Virgo|Libra|Scorpio|Sagittarius|Capricorn|Aquarius|Pisces|Ario|Tauro|Géminis|Cáncer|Virgo|Escorpio|Sagitario|Capricornio|Acuario|Piscis)(?!\*\*)/gi;
+
+// Ensure zodiac names are bolded (idempotent — won't double-bold)
+function ensureZodiacBold(text) {
+  if (!text) return text;
+  return text.replace(ZODIAC_RE, '**$1**');
+}
+
+// ══════════════════════════════════════════════════════════
 // SVG IMAGE GENERATOR
-// 1080×1920 SVG, server-side. Supports:
-//   • Emoji font stack
-//   • CJK (Chinese/Japanese/Korean) character-level wrapping
-//   • Bold words via **markers** → SVG tspan font-weight="800"
-//   • Hard clip so nothing ever overflows canvas
+// 1080×1920 — server-side, no browser needed
+// Features: emoji fonts, CJK char-wrap, bold tspan, clip overflow
 // ══════════════════════════════════════════════════════════
 const EMOJI_FONT = `'Apple Color Emoji','Noto Color Emoji','Segoe UI Emoji','Segoe UI Symbol'`;
 const BASE_FONT  = `ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif,${EMOJI_FONT}`;
 
 function generateSVG(post) {
   const W = 1080, H = 1920;
-  const PX = 88,  PY = 130;   // horizontal / vertical padding
-  const CW = W - PX * 2;      // 904px usable width
-  const BOTTOM = H - PY;      // hard bottom boundary (1790)
+  const PX = 88, PY = 130;
+  const CW     = W - PX * 2;   // 904px usable
+  const BOTTOM = H - PY;       // 1790 — hard floor
 
-  const rawTitle   = (post.title   || '').trim();
-  const content    = (post.content || []);
+  const rawTitle = (post.title   || '').trim();
+  const content  = (post.content || []);
+  const plainT   = cleanText(rawTitle);
 
-  // Clean title (strip ** for length measurement)
-  const cleanTitle = rawTitle.replace(/\*\*/g, '');
-
-  // Adaptive sizing — measure visual length (CJK + emoji = wide)
-  const totalVisLen = charVisLen(cleanTitle) + charVisLen(content.map(l => l || '').join(''));
-
+  // Adaptive sizing based on visual length
+  const visLen = charVisLen(plainT) + charVisLen(content.map(l => cleanText(l||'')).join(''));
   let ts, bs, tlh, blh, gap;
-  if      (totalVisLen < 80)  { ts=80; bs=52; tlh=112; blh=76; gap=64; }
-  else if (totalVisLen < 150) { ts=72; bs=46; tlh=100; blh=68; gap=56; }
-  else if (totalVisLen < 260) { ts=62; bs=41; tlh= 88; blh=60; gap=48; }
-  else if (totalVisLen < 420) { ts=54; bs=37; tlh= 76; blh=54; gap=42; }
-  else if (totalVisLen < 620) { ts=46; bs=33; tlh= 66; blh=48; gap=36; }
-  else if (totalVisLen < 900) { ts=40; bs=29; tlh= 58; blh=42; gap=30; }
-  else                        { ts=34; bs=26; tlh= 50; blh=38; gap=26; }
+  if      (visLen < 80)  { ts=80; bs=52; tlh=112; blh=76; gap=64; }
+  else if (visLen < 150) { ts=72; bs=46; tlh=100; blh=68; gap=56; }
+  else if (visLen < 260) { ts=62; bs=41; tlh= 88; blh=60; gap=48; }
+  else if (visLen < 420) { ts=54; bs=37; tlh= 76; blh=54; gap=42; }
+  else if (visLen < 620) { ts=46; bs=33; tlh= 66; blh=48; gap=36; }
+  else if (visLen < 900) { ts=40; bs=29; tlh= 58; blh=42; gap=30; }
+  else                   { ts=34; bs=26; tlh= 50; blh=38; gap=26; }
 
-  // CPL = chars per line.
-  // Latin: avg glyph ≈ 0.56em. CJK: avg glyph ≈ 1.0em.
-  // We measure in "visual units" (CJK/emoji = 2), so 0.56*2 ≈ 1.12em per VU.
-  // tCPL/bCPL are in visual units.
+  // CPL in visual units (wide = 2)
   const tCPL = Math.floor(CW / (ts * 0.58));
   const bCPL = Math.floor(CW / (bs * 0.58));
 
   // Wrap title
   const titleLines = smartWrap(rawTitle, tCPL);
 
-  // Wrap body — preserve empty lines as spacers, parse bold markers
+  // Wrap body
   const bodyLines = [];
   for (const line of content) {
     const raw = line || '';
-    if (!raw.replace(/\*\*/g,'').trim()) {
+    if (!cleanText(raw)) {
       bodyLines.push({ raw: '', gap: true });
     } else {
-      for (const w of smartWrap(raw, bCPL)) {
-        bodyLines.push({ raw: w, gap: false });
-      }
+      for (const w of smartWrap(raw, bCPL)) bodyLines.push({ raw: w, gap: false });
     }
   }
 
-  // Measure total block height
+  // Total height
   const titleH = titleLines.length * tlh;
   const bodyH  = bodyLines.reduce((s, l) => s + (l.gap ? blh * 0.5 : blh), 0);
   const totalH = titleH + (bodyLines.length ? gap + bodyH : 0);
 
-  // Vertically center; if too tall, pin to top padding
+  // Vertical centering
   let y = totalH > (H - PY * 2)
     ? PY + ts
     : Math.max(PY + ts, Math.round((H - totalH) / 2) + ts);
 
   const els = [];
 
-  // ── Title ──
+  // Title
   for (const line of titleLines) {
     if (y > BOTTOM + ts) break;
-    els.push(renderTextLine(PX, y, BASE_FONT, ts, 800, '#FFFFFF', line));
+    els.push(renderLine(PX, y, BASE_FONT, ts, 800, '#FFFFFF', line));
     y += tlh;
   }
 
-  // ── Accent bar ──
+  // Accent bar
   if (bodyLines.length) {
     const ay = y + Math.round(gap * 0.28);
     if (ay < BOTTOM) {
@@ -286,11 +334,11 @@ function generateSVG(post) {
     y += gap;
   }
 
-  // ── Body ──
+  // Body
   for (const line of bodyLines) {
     if (!line.gap && y > BOTTOM + bs) break;
     if (!line.gap) {
-      els.push(renderTextLine(PX, y, BASE_FONT, bs, 400, 'rgba(255,255,255,0.85)', line.raw));
+      els.push(renderLine(PX, y, BASE_FONT, bs, 400, 'rgba(255,255,255,0.85)', line.raw));
     }
     y += line.gap ? Math.round(blh * 0.5) : blh;
   }
@@ -312,175 +360,123 @@ ${els.join('\n')}
 </svg>`;
 }
 
-// ── Render a single text line, supporting **bold** markers ──
-// Returns an SVG <text> element string (with <tspan> for bold segments).
-function renderTextLine(px, y, fontFamily, fontSize, baseWeight, fill, rawText) {
-  const segments = parseBoldSegments(rawText);
-  const hasBold  = segments.some(s => s.bold);
+// ── Render one text line (supports **bold** tspan) ──────
+function renderLine(px, y, ff, fs, fw, fill, rawText) {
+  const segs    = parseBold(rawText);
+  const hasBold = segs.some(s => s.bold);
 
   if (!hasBold) {
-    // Simple text — no tspan needed
-    return `<text x="${px}" y="${y}" font-family="${fontFamily}" font-size="${fontSize}" font-weight="${baseWeight}" fill="${fill}" xml:space="preserve">${xe(rawText.replace(/\*\*/g, ''))}</text>`;
+    return `<text x="${px}" y="${y}" font-family="${ff}" font-size="${fs}" font-weight="${fw}" fill="${fill}" xml:space="preserve">${xe(cleanText(rawText))}</text>`;
   }
-
-  // Build inline tspan elements for mixed bold/normal
-  const tspans = segments.map(seg => {
-    const fw  = seg.bold ? 900 : baseWeight;
-    const clr = seg.bold ? '#FFFFFF' : fill;
-    return `<tspan font-weight="${fw}" fill="${clr}">${xe(seg.t)}</tspan>`;
+  const spans = segs.map(s => {
+    const w = s.bold ? 900 : fw;
+    const c = s.bold ? '#FFFFFF' : fill;
+    return `<tspan font-weight="${w}" fill="${c}">${xe(s.t)}</tspan>`;
   }).join('');
-
-  return `<text x="${px}" y="${y}" font-family="${fontFamily}" font-size="${fontSize}" font-weight="${baseWeight}" fill="${fill}" xml:space="preserve">${tspans}</text>`;
+  return `<text x="${px}" y="${y}" font-family="${ff}" font-size="${fs}" font-weight="${fw}" fill="${fill}" xml:space="preserve">${spans}</text>`;
 }
 
-// ── Parse **bold** markers into segments ──
-function parseBoldSegments(text) {
-  const segs = [];
-  const re   = /\*\*(.*?)\*\*/g;
+// ── Parse **bold** markers into segments ────────────────
+function parseBold(text) {
+  const segs = [], re = /\*\*(.*?)\*\*/g;
   let last = 0, m;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) segs.push({ t: text.slice(last, m.index), bold: false });
-    if (m[1]) segs.push({ t: m[1], bold: true });
+    if (m[1])           segs.push({ t: m[1], bold: true });
     last = re.lastIndex;
   }
   if (last < text.length) segs.push({ t: text.slice(last), bold: false });
   return segs.filter(s => s.t);
 }
 
-// ── Visual character length (CJK + emoji = 2 units each) ──
+// ── Visual char length (CJK + emoji = 2) ───────────────
 function charVisLen(str) {
   let n = 0;
-  for (const ch of [...(str || '')]) {
-    n += isWide(ch) ? 2 : 1;
-  }
+  for (const ch of [...(str || '')]) n += isWide(ch) ? 2 : 1;
   return n;
 }
 
-// Returns true if a character is "wide" (CJK, emoji, fullwidth)
 function isWide(ch) {
   const cp = ch.codePointAt(0);
   return (
-    // Emoji & symbols
-    (cp >= 0x1F000) ||
-    (cp >= 0x2600 && cp <= 0x27FF) ||
-    (cp >= 0xFE00 && cp <= 0xFE0F) ||
-    // CJK Unified Ideographs (most Chinese characters)
-    (cp >= 0x4E00 && cp <= 0x9FFF) ||
-    // CJK Extension A
-    (cp >= 0x3400 && cp <= 0x4DBF) ||
-    // CJK Extension B–F
-    (cp >= 0x20000 && cp <= 0x2FA1F) ||
-    // Hiragana + Katakana (Japanese)
-    (cp >= 0x3040 && cp <= 0x30FF) ||
-    // Korean Hangul
-    (cp >= 0xAC00 && cp <= 0xD7AF) ||
-    (cp >= 0x1100 && cp <= 0x11FF) ||
-    // Fullwidth forms
-    (cp >= 0xFF00 && cp <= 0xFFEF) ||
-    // CJK Symbols and Punctuation
-    (cp >= 0x3000 && cp <= 0x303F) ||
-    // Enclosed CJK
-    (cp >= 0x3200 && cp <= 0x32FF) ||
-    (cp >= 0x3300 && cp <= 0x33FF)
+    cp >= 0x1F000 ||
+    (cp >= 0x2600 && cp <= 0x27FF)  ||
+    (cp >= 0xFE00 && cp <= 0xFE0F)  ||
+    (cp >= 0x4E00 && cp <= 0x9FFF)  ||  // CJK Unified
+    (cp >= 0x3400 && cp <= 0x4DBF)  ||  // CJK Ext A
+    (cp >= 0x20000&& cp <= 0x2FA1F) ||  // CJK Ext B-F
+    (cp >= 0x3040 && cp <= 0x30FF)  ||  // Hiragana/Katakana
+    (cp >= 0xAC00 && cp <= 0xD7AF)  ||  // Korean Hangul
+    (cp >= 0x1100 && cp <= 0x11FF)  ||
+    (cp >= 0xFF00 && cp <= 0xFFEF)  ||  // Fullwidth
+    (cp >= 0x3000 && cp <= 0x303F)  ||  // CJK Symbols
+    (cp >= 0x3200 && cp <= 0x33FF)      // Enclosed CJK
   );
 }
 
-// ── Smart word-wrap that handles both Latin (word-boundary) and CJK (char-boundary) ──
-// Strips ** markers for length measurement but keeps them in output for bold rendering.
+// ── Smart wrap: CJK char-level, Latin word-level ────────
 function smartWrap(text, cpl) {
   if (!text) return [''];
-
-  const cleanText = text.replace(/\*\*/g, '');
-
-  // Detect if this line is primarily CJK (no meaningful spaces = CJK/Japanese/Korean)
-  const spaceCount = (cleanText.match(/ /g) || []).length;
-  const wideCount  = [...cleanText].filter(isWide).length;
-  const isCJK      = wideCount > cleanText.length * 0.3 || (wideCount > 2 && spaceCount < 2);
-
-  if (isCJK) {
-    return wrapCJK(text, cpl);
-  } else {
-    return wrapLatin(text, cpl);
-  }
+  const plain      = cleanText(text);
+  const spaceCount = (plain.match(/ /g) || []).length;
+  const wideCount  = [...plain].filter(isWide).length;
+  const isCJK      = wideCount > plain.length * 0.3 || (wideCount > 2 && spaceCount < 2);
+  return isCJK ? wrapCJK(text, cpl) : wrapLatin(text, cpl);
 }
 
-// CJK character-level wrap — can break at any character boundary
-// Keeps ** markers intact in output
+// CJK: break at any char boundary, preserve ** markers
 function wrapCJK(text, cpl) {
   const lines = [];
-  let curRaw = '', curLen = 0;
-  let inBold = false;
-
-  // Iterate characters of the raw text (including ** markers)
+  let curRaw = '', curLen = 0, inBold = false;
   const chars = [...text];
   let i = 0;
   while (i < chars.length) {
-    // Detect ** toggle
     if (chars[i] === '*' && chars[i+1] === '*') {
-      curRaw += '**';
-      inBold = !inBold;
-      i += 2;
-      continue;
+      curRaw += '**'; inBold = !inBold; i += 2; continue;
     }
-
     const ch    = chars[i];
     const chLen = isWide(ch) ? 2 : 1;
-
-    if (curLen + chLen > cpl && curRaw.replace(/\*\*/g,'').length > 0) {
-      // Close any open bold before breaking
+    if (curLen + chLen > cpl && cleanText(curRaw).length > 0) {
       if (inBold) curRaw += '**';
       lines.push(curRaw);
-      // Open bold again on new line if we were mid-bold
       curRaw = inBold ? '**' + ch : ch;
       curLen = chLen;
     } else {
-      curRaw += ch;
-      curLen += chLen;
+      curRaw += ch; curLen += chLen;
     }
     i++;
   }
-  if (curRaw.replace(/\*\*/g,'')) lines.push(curRaw);
+  if (cleanText(curRaw)) lines.push(curRaw);
   return lines.length ? lines : [''];
 }
 
-// Latin word-level wrap — breaks at spaces
-// Keeps ** markers intact within words
+// Latin: word-level wrap
 function wrapLatin(text, cpl) {
-  const words  = text.split(' ');
-  const lines  = [];
+  const words = text.split(' ');
+  const lines = [];
   let cur = '', curLen = 0;
-
   for (const word of words) {
-    const cleanWord = word.replace(/\*\*/g, '');
-    const wLen = charVisLen(cleanWord);
+    const wLen = charVisLen(cleanText(word));
     const sep  = cur ? 1 : 0;
-
     if (curLen + sep + wLen > cpl && cur) {
-      lines.push(cur);
-      cur    = word;
-      curLen = wLen;
+      lines.push(cur); cur = word; curLen = wLen;
     } else {
       cur    = cur ? `${cur} ${word}` : word;
       curLen += sep + wLen;
     }
   }
-
   if (cur) lines.push(cur);
   return lines.length ? lines : [''];
 }
 
-// ── XML/SVG escape (no ** markers should reach here) ──
+// ── XML escape ───────────────────────────────────────────
 function xe(s) {
   return (s || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// Legacy alias
-function x(s) { return xe(s); }
-
+// ── JSON repair ─────────────────────────────────────────
 function repairJSON(str) {
   try { JSON.parse(str); return str; } catch {}
   let s = str.replace(/,\s*$/, '');
@@ -490,8 +486,8 @@ function repairJSON(str) {
     if (c === '\\' && inS) { esc = true; continue; }
     if (c === '"') { inS = !inS; continue; }
     if (inS) continue;
-    if (c === '{') b++;  if (c === '}') b--;
-    if (c === '[') br++; if (c === ']') br--;
+    if (c === '{') b++; if (c === '}') b--;
+    if (c === '[') br++;if (c === ']') br--;
   }
   if (inS) s += '"';
   s = s.replace(/,\s*$/, '');
@@ -502,7 +498,7 @@ function repairJSON(str) {
 
 function extractFallback(raw) {
   const posts = [];
-  const re = /"title"\s*:\s*"([^"]+)"[^}]*?"content"\s*:\s*(\[[^\]]+\])/gs;
+  const re    = /"title"\s*:\s*"([^"]+)"[^}]*?"content"\s*:\s*(\[[^\]]+\])/gs;
   let m;
   while ((m = re.exec(raw)) !== null) {
     try { posts.push({ title: m[1], content: JSON.parse(m[2]) }); } catch {}
