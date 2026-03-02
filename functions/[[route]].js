@@ -96,9 +96,12 @@ JSON:`;
 
     if (method === 'GET') {
       const deviceId = url.searchParams.get('deviceId');
+      const template = url.searchParams.get('template') || '';
       if (!deviceId) return json({ error: 'No deviceId provided' }, 400, headers);
       try {
-        const list     = await env.KV.list({ prefix: `session:${deviceId}:` });
+        // Prefix includes template so each template has isolated history
+        const prefix   = template ? `session:${deviceId}:${template}:` : `session:${deviceId}:`;
+        const list     = await env.KV.list({ prefix });
         const sessions = [];
         for (const key of list.keys) {
           try {
@@ -121,7 +124,8 @@ JSON:`;
       if (!posts || !Array.isArray(posts) || posts.length === 0) return json({ error: 'Missing or empty posts' }, 400, headers);
       try {
         const ts  = timestamp || Date.now();
-        const key = `session:${deviceId}:${ts}`;
+        const tmpl = body.template || 'default';
+        const key = `session:${deviceId}:${tmpl}:${ts}`;
         const val = JSON.stringify({ posts, timestamp: ts, label: label || '', count: count || posts.length, sessionKey: sessionKey || '' });
         await env.KV.put(key, val, { expirationTtl: TTL });
         return json({ success: true, key }, 200, headers);
