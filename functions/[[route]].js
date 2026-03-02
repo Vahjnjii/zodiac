@@ -41,19 +41,23 @@ export async function onRequest(context) {
     if (!text)     return json({ error: 'No text provided' }, 400, H);
     if (!deviceId) return json({ error: 'Not signed in' }, 401, H);
 
-    // ── AI: parse text into structured posts ──
+    // ── AI: parse text into structured posts, with bold markers ──
     const prompt = `Return ONLY valid JSON. No explanation. No markdown. No code fences.
 
 Your job: split the input into separate posts and structure as JSON.
-CRITICAL: Copy every word, emoji, symbol, and punctuation EXACTLY as-is. Do not change, add, or remove anything.
+CRITICAL rules:
+1. Copy every word, emoji, symbol, and punctuation EXACTLY as-is from the input.
+2. Wrap IMPORTANT words in **double asterisks** for bold emphasis. Important = zodiac sign names, key nouns, planet names, numbers/dates, power words like "strength", "success", "love", action verbs at start of bullet points.
+3. Do NOT wrap every word — only genuinely important keywords deserve bold.
+4. Keep all emojis exactly as they appear in the input.
 
 Output format:
-{"posts":[{"title":"exact first line","content":["exact line","exact line",""]}]}
+{"posts":[{"title":"first line exactly","content":["line with **bold** words","next line",""]}]}
 
-- title = first line of each post, copied exactly
-- content = remaining lines, one string per element, copied exactly
+- title = first line of each post, copied exactly (you may bold key words in title too)
+- content = remaining lines, one string per element
 - empty lines become "" in content array
-- posts separated by blank lines or clear new titles
+- posts are separated by blank lines or clear new topic titles
 
 INPUT:
 ${text}
@@ -62,7 +66,7 @@ JSON:`;
 
     let aiRaw = '';
     try {
-      const r = await env.AI.run(model, { prompt, max_tokens: 4096, temperature: 0.1 });
+      const r = await env.AI.run(model, { prompt, max_tokens: 4096, temperature: 0.15 });
       if      (typeof r === 'string')   aiRaw = r;
       else if (r?.response)             aiRaw = r.response;
       else if (r?.result?.response)     aiRaw = r.result.response;
@@ -89,7 +93,7 @@ JSON:`;
     const jobId = `job:${deviceId}:${template}:${ts}`;
     await env.KV.put(jobId, JSON.stringify({
       status: 'processing', total: posts.length, done: 0,
-      label:  (posts[0]?.title || 'Session').trim().slice(0, 80),
+      label:  (posts[0]?.title || 'Session').replace(/\*\*/g,'').trim().slice(0, 80),
       timestamp: ts, template, deviceId, results: [],
     }), { expirationTtl: TTL });
 
@@ -101,12 +105,12 @@ JSON:`;
       for (let i = 0; i < posts.length; i++) {
         try {
           results.push({
-            title:   (posts[i].title   || '').trim(),
+            title:   (posts[i].title   || '').replace(/\*\*/g,'').trim(),
             content: (posts[i].content || []),
             svg:     generateSVG(posts[i]),
           });
           const cur = await env.KV.get(jobId, { type: 'json' });
-          if (!cur) break; // deleted while processing
+          if (!cur) break;
           await env.KV.put(jobId, JSON.stringify({
             ...cur, done: i + 1, results,
             status: i === posts.length - 1 ? 'done' : 'processing',
@@ -196,142 +200,286 @@ function json(data, status, headers) {
   });
 }
 
-// ── SVG Image Generator ─────────────────────────────────
-// Generates a 1080×1920 SVG entirely server-side.
-// No browser needed — stored in KV, served as data URI.
+// ══════════════════════════════════════════════════════════
+// SVG IMAGE GENERATOR
+// 1080×1920 SVG, server-side. Supports:
+//   • Emoji font stack
+//   • CJK (Chinese/Japanese/Korean) character-level wrapping
+//   • Bold words via **markers** → SVG tspan font-weight="800"
+//   • Hard clip so nothing ever overflows canvas
+// ══════════════════════════════════════════════════════════
 const EMOJI_FONT = `'Apple Color Emoji','Noto Color Emoji','Segoe UI Emoji','Segoe UI Symbol'`;
 const BASE_FONT  = `ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif,${EMOJI_FONT}`;
 
 function generateSVG(post) {
-  const W = 1080, H = 1920, PX = 92, PY = 120;
-  const CW      = W - PX * 2;          // 896px usable width
-  const MAX_H   = H - PY * 2;          // max usable height
-  const BOTTOM  = H - PY;              // hard bottom boundary
+  const W = 1080, H = 1920;
+  const PX = 88,  PY = 130;   // horizontal / vertical padding
+  const CW = W - PX * 2;      // 904px usable width
+  const BOTTOM = H - PY;      // hard bottom boundary (1790)
 
-  const title   = (post.title   || '').trim();
-  const content = (post.content || []);
+  const rawTitle   = (post.title   || '').trim();
+  const content    = (post.content || []);
 
-  // Adaptive font sizing — use visual length (emojis count as 2)
-  const len = visualLen(title) + visualLen(content.join(''));
+  // Clean title (strip ** for length measurement)
+  const cleanTitle = rawTitle.replace(/\*\*/g, '');
+
+  // Adaptive sizing — measure visual length (CJK + emoji = wide)
+  const totalVisLen = charVisLen(cleanTitle) + charVisLen(content.map(l => l || '').join(''));
+
   let ts, bs, tlh, blh, gap;
-  if      (len < 100) { ts=76; bs=50; tlh=108; blh=72; gap=60; }
-  else if (len < 200) { ts=68; bs=45; tlh= 96; blh=66; gap=52; }
-  else if (len < 350) { ts=60; bs=40; tlh= 84; blh=58; gap=46; }
-  else if (len < 550) { ts=52; bs=36; tlh= 74; blh=52; gap=40; }
-  else if (len < 800) { ts=44; bs=32; tlh= 64; blh=46; gap=34; }
-  else                { ts=38; bs=28; tlh= 56; blh=40; gap=28; }
+  if      (totalVisLen < 80)  { ts=80; bs=52; tlh=112; blh=76; gap=64; }
+  else if (totalVisLen < 150) { ts=72; bs=46; tlh=100; blh=68; gap=56; }
+  else if (totalVisLen < 260) { ts=62; bs=41; tlh= 88; blh=60; gap=48; }
+  else if (totalVisLen < 420) { ts=54; bs=37; tlh= 76; blh=54; gap=42; }
+  else if (totalVisLen < 620) { ts=46; bs=33; tlh= 66; blh=48; gap=36; }
+  else if (totalVisLen < 900) { ts=40; bs=29; tlh= 58; blh=42; gap=30; }
+  else                        { ts=34; bs=26; tlh= 50; blh=38; gap=26; }
 
-  // Chars per line — use 0.56× for mixed text, emoji counts as 2 chars
-  const tCPL = Math.floor(CW / (ts * 0.56));
-  const bCPL = Math.floor(CW / (bs * 0.56));
+  // CPL = chars per line.
+  // Latin: avg glyph ≈ 0.56em. CJK: avg glyph ≈ 1.0em.
+  // We measure in "visual units" (CJK/emoji = 2), so 0.56*2 ≈ 1.12em per VU.
+  // tCPL/bCPL are in visual units.
+  const tCPL = Math.floor(CW / (ts * 0.58));
+  const bCPL = Math.floor(CW / (bs * 0.58));
 
-  const titleLines = wrapVisual(title, tCPL);
+  // Wrap title
+  const titleLines = smartWrap(rawTitle, tCPL);
 
+  // Wrap body — preserve empty lines as spacers, parse bold markers
   const bodyLines = [];
   for (const line of content) {
-    if (!(line || '').trim()) {
-      bodyLines.push({ t: '', gap: true });
+    const raw = line || '';
+    if (!raw.replace(/\*\*/g,'').trim()) {
+      bodyLines.push({ raw: '', gap: true });
     } else {
-      for (const w of wrapVisual(line, bCPL)) bodyLines.push({ t: w, gap: false });
+      for (const w of smartWrap(raw, bCPL)) {
+        bodyLines.push({ raw: w, gap: false });
+      }
     }
   }
 
-  // Calculate total block height
-  const titleH  = titleLines.length * tlh;
-  const bodyH   = bodyLines.reduce((s, l) => s + (l.gap ? blh * 0.5 : blh), 0);
-  const totalH  = titleH + (bodyLines.length ? gap + bodyH : 0);
+  // Measure total block height
+  const titleH = titleLines.length * tlh;
+  const bodyH  = bodyLines.reduce((s, l) => s + (l.gap ? blh * 0.5 : blh), 0);
+  const totalH = titleH + (bodyLines.length ? gap + bodyH : 0);
 
-  // Vertically center, but always start at least PY from top
-  let startY = Math.max(PY + ts, Math.floor((H - totalH) / 2) + ts);
+  // Vertically center; if too tall, pin to top padding
+  let y = totalH > (H - PY * 2)
+    ? PY + ts
+    : Math.max(PY + ts, Math.round((H - totalH) / 2) + ts);
 
-  // If block is taller than usable height, start from top
-  if (totalH > MAX_H) startY = PY + ts;
-
-  let y = startY;
   const els = [];
 
-  // Title lines
+  // ── Title ──
   for (const line of titleLines) {
-    if (y - ts > BOTTOM) break; // hard clip — never draw outside canvas
-    els.push(`<text x="${PX}" y="${y}" font-family="${BASE_FONT}" font-size="${ts}" font-weight="800" fill="#FFFFFF" xml:space="preserve">${x(line)}</text>`);
+    if (y > BOTTOM + ts) break;
+    els.push(renderTextLine(PX, y, BASE_FONT, ts, 800, '#FFFFFF', line));
     y += tlh;
   }
 
-  // Accent line between title and body
+  // ── Accent bar ──
   if (bodyLines.length) {
-    const accentY = y + Math.floor(gap * 0.3);
-    if (accentY < BOTTOM) {
-      els.push(`<rect x="${PX}" y="${accentY}" width="40" height="3" rx="2" fill="rgba(139,92,246,0.7)"/>`);
+    const ay = y + Math.round(gap * 0.28);
+    if (ay < BOTTOM) {
+      els.push(`<rect x="${PX}" y="${ay}" width="44" height="4" rx="2" fill="rgba(139,92,246,0.75)"/>`);
     }
     y += gap;
   }
 
-  // Body lines
+  // ── Body ──
   for (const line of bodyLines) {
-    if (y - bs > BOTTOM) break; // hard clip
+    if (!line.gap && y > BOTTOM + bs) break;
     if (!line.gap) {
-      els.push(`<text x="${PX}" y="${y}" font-family="${BASE_FONT}" font-size="${bs}" font-weight="400" fill="rgba(255,255,255,0.82)" xml:space="preserve">${x(line.t)}</text>`);
+      els.push(renderTextLine(PX, y, BASE_FONT, bs, 400, 'rgba(255,255,255,0.85)', line.raw));
     }
-    y += line.gap ? blh * 0.5 : blh;
+    y += line.gap ? Math.round(blh * 0.5) : blh;
   }
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
 <defs>
-  <linearGradient id="g" x1="0" y1="0" x2="${W}" y2="${H}" gradientUnits="userSpaceOnUse">
-    <stop offset="0%" stop-color="#06020f"/>
+  <linearGradient id="bg" x1="0" y1="0" x2="${W}" y2="${H}" gradientUnits="userSpaceOnUse">
+    <stop offset="0%"   stop-color="#06020f"/>
+    <stop offset="55%"  stop-color="#080412"/>
     <stop offset="100%" stop-color="#00091a"/>
   </linearGradient>
   <clipPath id="clip"><rect width="${W}" height="${H}"/></clipPath>
 </defs>
-<rect width="${W}" height="${H}" fill="url(#g)"/>
+<rect width="${W}" height="${H}" fill="url(#bg)"/>
 <g clip-path="url(#clip)">
 ${els.join('\n')}
 </g>
 </svg>`;
 }
 
-// Count visual width: emojis and wide chars count as 2
-function visualLen(str) {
+// ── Render a single text line, supporting **bold** markers ──
+// Returns an SVG <text> element string (with <tspan> for bold segments).
+function renderTextLine(px, y, fontFamily, fontSize, baseWeight, fill, rawText) {
+  const segments = parseBoldSegments(rawText);
+  const hasBold  = segments.some(s => s.bold);
+
+  if (!hasBold) {
+    // Simple text — no tspan needed
+    return `<text x="${px}" y="${y}" font-family="${fontFamily}" font-size="${fontSize}" font-weight="${baseWeight}" fill="${fill}" xml:space="preserve">${xe(rawText.replace(/\*\*/g, ''))}</text>`;
+  }
+
+  // Build inline tspan elements for mixed bold/normal
+  const tspans = segments.map(seg => {
+    const fw  = seg.bold ? 900 : baseWeight;
+    const clr = seg.bold ? '#FFFFFF' : fill;
+    return `<tspan font-weight="${fw}" fill="${clr}">${xe(seg.t)}</tspan>`;
+  }).join('');
+
+  return `<text x="${px}" y="${y}" font-family="${fontFamily}" font-size="${fontSize}" font-weight="${baseWeight}" fill="${fill}" xml:space="preserve">${tspans}</text>`;
+}
+
+// ── Parse **bold** markers into segments ──
+function parseBoldSegments(text) {
+  const segs = [];
+  const re   = /\*\*(.*?)\*\*/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) segs.push({ t: text.slice(last, m.index), bold: false });
+    if (m[1]) segs.push({ t: m[1], bold: true });
+    last = re.lastIndex;
+  }
+  if (last < text.length) segs.push({ t: text.slice(last), bold: false });
+  return segs.filter(s => s.t);
+}
+
+// ── Visual character length (CJK + emoji = 2 units each) ──
+function charVisLen(str) {
   let n = 0;
   for (const ch of [...(str || '')]) {
-    const cp = ch.codePointAt(0);
-    if (cp >= 0x1F000 || (cp >= 0x2600 && cp <= 0x27FF) || (cp >= 0xFE00 && cp <= 0xFE0F)) n += 2;
-    else n += 1;
+    n += isWide(ch) ? 2 : 1;
   }
   return n;
 }
 
-// Word-wrap respecting visual (emoji-aware) char width
-function wrapVisual(text, cpl) {
+// Returns true if a character is "wide" (CJK, emoji, fullwidth)
+function isWide(ch) {
+  const cp = ch.codePointAt(0);
+  return (
+    // Emoji & symbols
+    (cp >= 0x1F000) ||
+    (cp >= 0x2600 && cp <= 0x27FF) ||
+    (cp >= 0xFE00 && cp <= 0xFE0F) ||
+    // CJK Unified Ideographs (most Chinese characters)
+    (cp >= 0x4E00 && cp <= 0x9FFF) ||
+    // CJK Extension A
+    (cp >= 0x3400 && cp <= 0x4DBF) ||
+    // CJK Extension B–F
+    (cp >= 0x20000 && cp <= 0x2FA1F) ||
+    // Hiragana + Katakana (Japanese)
+    (cp >= 0x3040 && cp <= 0x30FF) ||
+    // Korean Hangul
+    (cp >= 0xAC00 && cp <= 0xD7AF) ||
+    (cp >= 0x1100 && cp <= 0x11FF) ||
+    // Fullwidth forms
+    (cp >= 0xFF00 && cp <= 0xFFEF) ||
+    // CJK Symbols and Punctuation
+    (cp >= 0x3000 && cp <= 0x303F) ||
+    // Enclosed CJK
+    (cp >= 0x3200 && cp <= 0x32FF) ||
+    (cp >= 0x3300 && cp <= 0x33FF)
+  );
+}
+
+// ── Smart word-wrap that handles both Latin (word-boundary) and CJK (char-boundary) ──
+// Strips ** markers for length measurement but keeps them in output for bold rendering.
+function smartWrap(text, cpl) {
   if (!text) return [''];
+
+  const cleanText = text.replace(/\*\*/g, '');
+
+  // Detect if this line is primarily CJK (no meaningful spaces = CJK/Japanese/Korean)
+  const spaceCount = (cleanText.match(/ /g) || []).length;
+  const wideCount  = [...cleanText].filter(isWide).length;
+  const isCJK      = wideCount > cleanText.length * 0.3 || (wideCount > 2 && spaceCount < 2);
+
+  if (isCJK) {
+    return wrapCJK(text, cpl);
+  } else {
+    return wrapLatin(text, cpl);
+  }
+}
+
+// CJK character-level wrap — can break at any character boundary
+// Keeps ** markers intact in output
+function wrapCJK(text, cpl) {
+  const lines = [];
+  let curRaw = '', curLen = 0;
+  let inBold = false;
+
+  // Iterate characters of the raw text (including ** markers)
+  const chars = [...text];
+  let i = 0;
+  while (i < chars.length) {
+    // Detect ** toggle
+    if (chars[i] === '*' && chars[i+1] === '*') {
+      curRaw += '**';
+      inBold = !inBold;
+      i += 2;
+      continue;
+    }
+
+    const ch    = chars[i];
+    const chLen = isWide(ch) ? 2 : 1;
+
+    if (curLen + chLen > cpl && curRaw.replace(/\*\*/g,'').length > 0) {
+      // Close any open bold before breaking
+      if (inBold) curRaw += '**';
+      lines.push(curRaw);
+      // Open bold again on new line if we were mid-bold
+      curRaw = inBold ? '**' + ch : ch;
+      curLen = chLen;
+    } else {
+      curRaw += ch;
+      curLen += chLen;
+    }
+    i++;
+  }
+  if (curRaw.replace(/\*\*/g,'')) lines.push(curRaw);
+  return lines.length ? lines : [''];
+}
+
+// Latin word-level wrap — breaks at spaces
+// Keeps ** markers intact within words
+function wrapLatin(text, cpl) {
   const words  = text.split(' ');
   const lines  = [];
   let cur = '', curLen = 0;
+
   for (const word of words) {
-    const wLen = visualLen(word);
+    const cleanWord = word.replace(/\*\*/g, '');
+    const wLen = charVisLen(cleanWord);
     const sep  = cur ? 1 : 0;
+
     if (curLen + sep + wLen > cpl && cur) {
       lines.push(cur);
-      cur = word; curLen = wLen;
+      cur    = word;
+      curLen = wLen;
     } else {
-      cur = cur ? `${cur} ${word}` : word;
+      cur    = cur ? `${cur} ${word}` : word;
       curLen += sep + wLen;
     }
   }
+
   if (cur) lines.push(cur);
   return lines.length ? lines : [''];
 }
 
-function wrap(text, cpl) { return wrapVisual(text, cpl); }
-
-function x(s) { // XML/SVG escape
+// ── XML/SVG escape (no ** markers should reach here) ──
+function xe(s) {
   return (s || '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
+
+// Legacy alias
+function x(s) { return xe(s); }
 
 function repairJSON(str) {
   try { JSON.parse(str); return str; } catch {}
