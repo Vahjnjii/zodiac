@@ -547,6 +547,21 @@ function restoreJobStates(jobId, count) {
 }
 
 /* ═════════════════════════════════════════════
+   RANDOM FILENAME GENERATOR
+   Produces a unique 9-digit numeric string every call,
+   e.g. "luma_481923704.png" — never repeats, browser
+   never triggers "download same file again" prompt.
+═════════════════════════════════════════════ */
+function randName(ext) {
+  // crypto.getRandomValues gives cryptographically random bytes → convert to
+  // a 9-digit decimal string (100000000 – 999999999) for clean filenames.
+  const arr = new Uint32Array(1);
+  crypto.getRandomValues(arr);
+  const n = (arr[0] % 900000000) + 100000000; // always 9 digits
+  return `luma_${n}.${ext}`;
+}
+
+/* ═════════════════════════════════════════════
    GOOGLE AUTH
 ═════════════════════════════════════════════ */
 async function initGoogleAuth() {
@@ -834,10 +849,10 @@ async function shareImage(jobId, index) {
     try { await navigator.clipboard.writeText(title); } catch {}
 
     // ── Record interaction BEFORE share so border always appears ──
-    // (On some Android browsers navigator.share doesn't trigger catch/then reliably)
     recordInteraction(jobId, index, 'shared', title);
 
-    const file = new File([blob], `luma_${index + 1}.png`, { type: 'image/png' });
+    // ── Random filename: browser never sees the same name twice ──
+    const file = new File([blob], randName('png'), { type: 'image/png' });
 
     if (navigator.share) {
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -847,7 +862,7 @@ async function shareImage(jobId, index) {
       }
     } else {
       // Desktop: download as fallback
-      triggerDownload(blob, `luma_${index + 1}.png`);
+      triggerDownload(blob, randName('png'));
     }
 
     toast('Shared! Title copied ✓');
@@ -869,15 +884,16 @@ async function dlImage(jobId, index) {
   try {
     const blob = await getPngBlob(jobId, index);
     if (blob) {
-      triggerDownload(blob, `luma_${index + 1}.png`);
+      // ── Random filename every time ──
+      triggerDownload(blob, randName('png'));
       const title = getTitle(jobId, index);
-      // ── Record interaction ──
       recordInteraction(jobId, index, 'saved', title);
       toast('Saved to gallery! ✓');
     } else {
-      const svg   = _svgStore[jobId]?.[index];
+      const svg = _svgStore[jobId]?.[index];
       if (!svg) throw new Error('Image not ready');
-      triggerDownload(new Blob([svg], { type:'image/svg+xml' }), `luma_${index+1}.svg`);
+      // ── Random filename for SVG fallback too ──
+      triggerDownload(new Blob([svg], { type:'image/svg+xml' }), randName('svg'));
       toast('Saved as SVG!');
     }
   } catch(e) {
@@ -899,7 +915,8 @@ async function downloadAllImages(jobId, count) {
     try {
       const blob = await getPngBlob(jobId, i);
       if (blob) {
-        triggerDownload(blob, `luma_${i + 1}.png`);
+        // ── Each file in the batch gets its own random name ──
+        triggerDownload(blob, randName('png'));
         recordInteraction(jobId, i, 'saved', getTitle(jobId, i));
         done++;
         await sleep(380); // stagger so browser accepts each download
@@ -974,7 +991,6 @@ function renderHistory(sessions) {
   if (!sessions.length) { list.innerHTML = '<div class="hist-empty">No history yet.<br>Your sessions appear here for 3 days.</div>'; return; }
   list.innerHTML = sessions.map(s => {
     const date  = new Date(s.timestamp).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-    // Correct count: show done (rendered) of total
     const done  = s.done  || 0;
     const total = s.total || 0;
     const label = escHtml(s.label || 'Session');
