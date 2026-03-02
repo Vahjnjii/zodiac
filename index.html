@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>LUMA</title>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -15,8 +18,28 @@
   --tx:#fff; --mu:rgba(255,255,255,.35); --mu2:rgba(255,255,255,.15);
   --ind:#6366f1; --pur:#8b5cf6; --gn:#22c55e; --rd:#ef4444; --yw:#f59e0b;
 }
-html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;min-height:100vh;-webkit-font-smoothing:antialiased}
-::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#1e1b2e;border-radius:3px}
+
+/* ── Base — CRITICAL: prevent body scroll on Android ── */
+html {
+  height: 100%;
+  overflow: hidden;
+  /* Prevent pull-to-refresh and overscroll on Android Chrome */
+  overscroll-behavior: none;
+}
+body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--bg);
+  color: var(--tx);
+  font-family: ui-sans-serif,system-ui,-apple-system,sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* Prevent text selection highlighting on tap */
+  -webkit-tap-highlight-color: transparent;
+}
+
+::-webkit-scrollbar{width:3px;height:3px}
+::-webkit-scrollbar-thumb{background:#1e1b2e;border-radius:3px}
 
 /* ── Keyframes ─────────────────────────────────── */
 @keyframes spin   {to{transform:rotate(360deg)}}
@@ -27,19 +50,25 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
 @keyframes orbF2  {0%,100%{transform:translate(0,0)}50%{transform:translate(20px,-30px) scale(1.1)}}
 @keyframes shimmer{0%{background-position:200% center}100%{background-position:-200% center}}
 @keyframes pulse  {0%,100%{box-shadow:0 0 0 0 rgba(139,92,246,.5)}50%{box-shadow:0 0 0 14px rgba(139,92,246,0)}}
-
 .spin{animation:spin 1s linear infinite}
 
-/* ── Screen base ───────────────────────────────── */
-.screen{display:none}
-.screen.active{display:flex}
+/* ── Screen base — FIXED positioning for all screens ── */
+.screen {
+  display: none;
+  position: fixed;
+  inset: 0;
+  /* Safe area insets for notch/home bar devices */
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.screen.active { display: flex; }
 
 /* ═══════════════════════════════════════════════
    LOGIN SCREEN
 ═══════════════════════════════════════════════ */
 #screen-login{
-  min-height:100vh;flex-direction:column;align-items:center;justify-content:center;
-  padding:24px;background:#000;position:relative;overflow:hidden;
+  flex-direction:column;align-items:center;justify-content:center;
+  padding:24px;background:#000;overflow-y:auto;
+  -webkit-overflow-scrolling:touch;
 }
 #screen-login::before{
   content:'';position:absolute;inset:0;pointer-events:none;
@@ -100,7 +129,8 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
    TEMPLATES SCREEN
 ═══════════════════════════════════════════════ */
 #screen-templates{
-  min-height:100vh;flex-direction:column;background:#050508;overflow-y:auto;position:relative;
+  flex-direction:column;background:#050508;overflow-y:auto;
+  -webkit-overflow-scrolling:touch;position:fixed;
 }
 #screen-templates::after{
   content:'';position:fixed;width:600px;height:600px;border-radius:50%;
@@ -163,7 +193,7 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
 .user-avatar{width:24px;height:24px;border-radius:50%;object-fit:cover}
 .user-name{font-size:12px;font-weight:600;color:var(--mu);max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .signout-menu{
-  position:fixed;top:64px;right:16px;z-index:300;
+  position:fixed;top:64px;right:16px;z-index:500;
   background:#0d0c1a;border:1px solid rgba(255,255,255,.09);border-radius:14px;
   padding:8px;min-width:190px;display:none;box-shadow:0 12px 40px rgba(0,0,0,.7);
   animation:fadeUp .18s ease both;
@@ -179,29 +209,41 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
 .signout-btn:hover{background:rgba(239,68,68,.08)}
 
 /* ═══════════════════════════════════════════════
-   CHAT SCREEN
+   CHAT SCREEN — FULLY FIXED LAYOUT
+   No part of this screen should cause body scroll.
+   Only .ch-messages scrolls internally.
 ═══════════════════════════════════════════════ */
-#screen-chat{height:100dvh;flex-direction:column;overflow:hidden;background:var(--bg)}
+#screen-chat{
+  flex-direction:column;
+  overflow:hidden;
+  background:var(--bg);
+}
 
-/* nav */
+/* nav — fixed at top, never shrinks */
 .ch-nav{
-  flex-shrink:0;display:flex;align-items:center;gap:10px;
-  padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.05);
-  background:rgba(5,5,8,.96);backdrop-filter:blur(16px);z-index:20;
+  flex-shrink:0;
+  display:flex;align-items:center;gap:10px;
+  padding:12px 14px;
+  padding-top:calc(12px + env(safe-area-inset-top));
+  border-bottom:1px solid rgba(255,255,255,.05);
+  background:rgba(5,5,8,.97);
+  backdrop-filter:blur(16px);
+  -webkit-backdrop-filter:blur(16px);
+  z-index:20;
 }
 .ch-nav-back{
-  width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;
   background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.07);
   color:var(--mu);font-size:13px;cursor:pointer;flex-shrink:0;transition:all .2s;
 }
 .ch-nav-back:hover{background:rgba(255,255,255,.09);color:#fff}
-.ch-nav-center{flex:1;display:flex;align-items:center;gap:10px;min-width:0}
+.ch-nav-center{flex:1;display:flex;align-items:center;gap:10px;min-width:0;overflow:hidden}
 .ch-nav-icon{
   width:32px;height:32px;border-radius:10px;flex-shrink:0;
   background:linear-gradient(135deg,rgba(99,102,241,.2),rgba(139,92,246,.15));
   border:1px solid rgba(139,92,246,.2);display:flex;align-items:center;justify-content:center;font-size:15px;
 }
-.ch-nav-title{font-size:15px;font-weight:700;letter-spacing:-.2px;white-space:nowrap}
+.ch-nav-title{font-size:15px;font-weight:700;letter-spacing:-.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ch-nav-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
 .ch-hist-btn{
   display:flex;align-items:center;gap:6px;
@@ -211,24 +253,32 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
 }
 .ch-hist-btn:hover{background:rgba(255,255,255,.09);color:#fff;border-color:rgba(255,255,255,.14)}
 .ch-hist-btn i{font-size:11px}
-
-/* model selector in nav */
 .ch-model-sel{
   background:transparent;border:none;color:var(--mu);font-size:11px;
-  cursor:pointer;font-family:inherit;outline:none;
+  cursor:pointer;font-family:inherit;outline:none;max-width:90px;
 }
 .ch-model-sel option{background:#1a1828}
 
-/* messages */
+/* messages — THE ONLY SCROLLABLE AREA */
 .ch-messages{
-  flex:1;overflow-y:auto;padding:16px 14px 8px;
-  display:flex;flex-direction:column;gap:10px;
+  flex:1;
+  overflow-y:auto;
+  overflow-x:hidden;
+  -webkit-overflow-scrolling:touch;
+  overscroll-behavior:contain;
+  padding:16px 14px 8px;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  /* Prevent scroll from bleeding to body on Android */
+  position:relative;
 }
 
 /* empty state */
 .ch-empty{
   flex:1;display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:12px;color:var(--mu);text-align:center;padding:40px 20px;
+  min-height:200px;
 }
 .ch-empty-icon{
   width:64px;height:64px;border-radius:20px;
@@ -249,7 +299,7 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
   animation:fadeUp .25s ease both;
 }
 
-/* typing / thinking */
+/* thinking dots */
 .ch-thinking{
   align-self:flex-start;display:inline-flex;align-items:center;gap:10px;
   background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);
@@ -266,34 +316,88 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
 
 /* bot image group */
 .ch-bot-group{align-self:flex-start;width:100%;display:flex;flex-direction:column;gap:8px}
+
+/* group header — shows status + Download All when done */
 .ch-group-hd{
-  display:inline-flex;align-items:center;gap:8px;
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
   background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);
-  border-radius:10px;padding:7px 12px;font-size:12px;color:var(--mu);
-  align-self:flex-start;
+  border-radius:10px;padding:8px 12px;font-size:12px;color:var(--mu);
+  flex-wrap:wrap;
 }
-.ch-img-row{display:flex;flex-wrap:nowrap;gap:10px;overflow-x:auto;padding-bottom:4px;width:100%}
+.ch-group-hd-left{display:flex;align-items:center;gap:8px;flex-shrink:0}
+
+/* Download All button — appears inside group header when all images done */
+.ch-dl-all-btn{
+  display:flex;align-items:center;justify-content:center;gap:7px;
+  background:linear-gradient(135deg,rgba(99,102,241,.25),rgba(139,92,246,.2));
+  border:1px solid rgba(139,92,246,.35);
+  border-radius:8px;padding:7px 14px;
+  font-size:12px;font-weight:700;color:rgba(167,139,250,.95);
+  cursor:pointer;font-family:inherit;transition:all .2s;
+  white-space:nowrap;
+}
+.ch-dl-all-btn:hover{background:linear-gradient(135deg,rgba(99,102,241,.38),rgba(139,92,246,.3));border-color:rgba(139,92,246,.5);color:#c4b5fd}
+.ch-dl-all-btn:active{transform:scale(.96)}
+.ch-dl-all-btn:disabled{opacity:.5;cursor:wait}
+.ch-dl-all-btn i{font-size:11px}
+
+/* horizontal scrolling image row */
+.ch-img-row{
+  display:flex;flex-wrap:nowrap;gap:10px;
+  overflow-x:auto;overflow-y:hidden;
+  -webkit-overflow-scrolling:touch;
+  padding-bottom:6px;width:100%;
+  /* snap for a nice swipe feel */
+  scroll-snap-type:x mandatory;
+}
 .ch-img-row::-webkit-scrollbar{height:3px}
 .ch-img-row::-webkit-scrollbar-thumb{background:#1e1b2e;border-radius:3px}
 
 /* image card */
 .ch-img-card{
-  flex-shrink:0;width:148px;border-radius:14px;overflow:hidden;
+  flex-shrink:0;width:160px;border-radius:14px;overflow:hidden;
   background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);
   animation:fadeUp .3s ease both;transition:border-color .2s;
+  scroll-snap-align:start;
 }
 .ch-img-card:hover{border-color:rgba(255,255,255,.16)}
-.ch-img-wrap{width:100%;aspect-ratio:9/16;overflow:hidden;background:#000;cursor:pointer;position:relative}
+.ch-img-wrap{
+  width:100%;aspect-ratio:9/16;overflow:hidden;background:#000;
+  cursor:pointer;position:relative;
+}
 .ch-img-wrap img{width:100%;height:100%;object-fit:cover;display:block;transition:opacity .3s}
 .ch-img-wrap.loading img{opacity:0}
-.ch-img-actions{padding:8px;display:flex;gap:5px}
+
+/* ── Button layout:
+   [  SHARE  ] ← full-width, tall, prominent
+   [DL] [COPY] ← half width each, smaller below
+── */
+.ch-img-actions{
+  padding:8px;
+  display:flex;flex-direction:column;gap:5px;
+}
+.ch-img-btn-share{
+  width:100%;display:flex;align-items:center;justify-content:center;gap:7px;
+  background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(34,197,94,.08));
+  border:1px solid rgba(34,197,94,.28);
+  border-radius:9px;padding:10px 8px;
+  font-size:12px;font-weight:700;color:rgba(134,239,172,.95);
+  cursor:pointer;font-family:inherit;transition:all .18s;
+}
+.ch-img-btn-share:hover{background:linear-gradient(135deg,rgba(34,197,94,.25),rgba(34,197,94,.15));border-color:rgba(34,197,94,.45)}
+.ch-img-btn-share:active{transform:scale(.96)}
+.ch-img-btn-share.saving{opacity:.5;cursor:wait}
+.ch-img-btn-share i{font-size:12px}
+
+.ch-img-btns-row{display:flex;gap:5px}
 .ch-img-btn{
   flex:1;display:flex;align-items:center;justify-content:center;gap:4px;
   background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.07);
-  border-radius:7px;padding:6px 4px;font-size:10px;font-weight:600;color:var(--mu);
+  border-radius:7px;padding:7px 4px;font-size:10px;font-weight:600;color:var(--mu);
   cursor:pointer;font-family:inherit;transition:all .18s;
 }
 .ch-img-btn:hover{background:rgba(255,255,255,.1);color:#fff;border-color:rgba(255,255,255,.15)}
+.ch-img-btn:active{transform:scale(.94)}
 .ch-img-btn i{font-size:10px}
 .ch-img-btn.saving{opacity:.5;cursor:wait}
 
@@ -312,29 +416,37 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
   animation:fadeUp .25s ease both;
 }
 
-/* input bar */
+/* input bar — fixed at bottom, never shrinks */
 .ch-input-bar{
-  flex-shrink:0;padding:10px 12px 12px;
+  flex-shrink:0;
+  padding:10px 12px;
+  padding-bottom:calc(10px + env(safe-area-inset-bottom));
   border-top:1px solid rgba(255,255,255,.05);
-  background:rgba(5,5,8,.96);backdrop-filter:blur(16px);
+  background:rgba(5,5,8,.97);
+  backdrop-filter:blur(16px);
+  -webkit-backdrop-filter:blur(16px);
   display:flex;align-items:flex-end;gap:9px;
+  z-index:20;
 }
 .ch-textarea{
   flex:1;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);
   border-radius:16px;padding:11px 14px;color:#fff;font-size:15px;
   font-family:inherit;resize:none;outline:none;
-  min-height:46px;max-height:180px;line-height:1.55;
-  transition:border-color .2s;scrollbar-width:none;
+  min-height:46px;max-height:140px;line-height:1.55;
+  transition:border-color .2s;
+  /* Prevent iOS from zooming in on focus (keeps layout stable) */
+  font-size:16px;
+  -webkit-overflow-scrolling:touch;
 }
-.ch-textarea::-webkit-scrollbar{display:none}
 .ch-textarea:focus{border-color:rgba(99,102,241,.38)}
 .ch-textarea::placeholder{color:rgba(255,255,255,.22)}
 .ch-send{
-  width:44px;height:44px;flex-shrink:0;border-radius:50%;
+  width:46px;height:46px;flex-shrink:0;border-radius:50%;
   background:linear-gradient(135deg,#6366f1,#8b5cf6);border:none;
-  color:#fff;font-size:15px;cursor:pointer;
+  color:#fff;font-size:16px;cursor:pointer;
   display:flex;align-items:center;justify-content:center;
   transition:all .2s;box-shadow:0 4px 16px rgba(99,102,241,.32);
+  -webkit-tap-highlight-color:transparent;
 }
 .ch-send:hover:not(:disabled){transform:scale(1.07);box-shadow:0 6px 20px rgba(99,102,241,.42)}
 .ch-send:active:not(:disabled){transform:scale(.94)}
@@ -343,7 +455,7 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
 /* ═══════════════════════════════════════════════
    HISTORY DRAWER
 ═══════════════════════════════════════════════ */
-.hist-panel{position:fixed;inset:0;z-index:200;display:none}
+.hist-panel{position:fixed;inset:0;z-index:400;display:none}
 .hist-panel.open{display:flex}
 .hist-back{position:absolute;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(4px)}
 .hist-drawer{
@@ -352,7 +464,9 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
   display:flex;flex-direction:column;animation:slideIn .28s cubic-bezier(.16,1,.3,1) both;
 }
 .hist-head{
-  padding:16px 18px;border-bottom:1px solid rgba(255,255,255,.05);
+  padding:16px 18px;
+  padding-top:calc(16px + env(safe-area-inset-top));
+  border-bottom:1px solid rgba(255,255,255,.05);
   display:flex;align-items:center;justify-content:space-between;flex-shrink:0;
 }
 .hist-head-txt{font-size:15px;font-weight:800}
@@ -363,7 +477,7 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
   display:flex;align-items:center;justify-content:center;transition:all .18s;
 }
 .hist-close:hover{background:rgba(239,68,68,.12);color:#fca5a5}
-.hist-list{flex:1;overflow-y:auto;padding:10px}
+.hist-list{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:10px}
 .hist-item{
   background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);
   border-radius:12px;padding:13px 14px;margin-bottom:8px;cursor:pointer;
@@ -389,7 +503,7 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
    TOAST
 ═══════════════════════════════════════════════ */
 .toast{
-  position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:400;
+  position:fixed;bottom:90px;left:50%;transform:translateX(-50%);z-index:600;
   background:rgba(14,12,26,.97);backdrop-filter:blur(12px);color:#fff;
   padding:10px 20px;border-radius:50px;border:1px solid rgba(255,255,255,.12);
   box-shadow:0 8px 32px rgba(0,0,0,.6);display:flex;align-items:center;
@@ -486,7 +600,7 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
     </div>
   </div>
 
-  <!-- Messages -->
+  <!-- Messages — only this area scrolls -->
   <div id="ch-messages" class="ch-messages">
     <div class="ch-empty" id="ch-empty">
       <div class="ch-empty-icon">✨</div>
@@ -495,7 +609,7 @@ html,body{background:var(--bg);color:var(--tx);font-family:ui-sans-serif,system-
     </div>
   </div>
 
-  <!-- Input -->
+  <!-- Input bar — fixed at bottom -->
   <div class="ch-input-bar">
     <textarea id="ch-textarea" class="ch-textarea" placeholder="Paste your content here…" rows="1"></textarea>
     <button id="ch-send" class="ch-send" onclick="sendMessage()"><i class="fas fa-arrow-up"></i></button>
@@ -546,6 +660,7 @@ let _pollTimer       = null;
 let _activeJobId     = null;
 let _seenCount       = 0;
 const _svgStore      = {}; // jobId → [svg, svg, ...]
+const _pngCache      = {}; // "jobId-index" → Blob
 
 /* ═════════════════════════════════════════════
    GOOGLE AUTH
@@ -591,28 +706,26 @@ function onGoogleToken(resp) {
 function enterApp() {
   const name = currentUser.name?.split(' ')[0] || 'User';
   const pic  = currentUser.picture || '';
-  ['ua-tmpl','ua-chat'].forEach(id => { const el=document.getElementById(id); if(el) el.src=pic; });
-  ['un-tmpl'].forEach(id => { const el=document.getElementById(id); if(el) el.textContent=name; });
-  document.getElementById('so-name').textContent  = currentUser.name || '';
-  document.getElementById('so-email').textContent = currentUser.email || '';
+  ['ua-tmpl','ua-chat'].forEach(id => { const e=el(id); if(e) e.src=pic; });
+  ['un-tmpl'].forEach(id => { const e=el(id); if(e) e.textContent=name; });
+  el('so-name').textContent  = currentUser.name || '';
+  el('so-email').textContent = currentUser.email || '';
   const h = new Date().getHours();
   const g = h<12?'Good morning':h<17?'Good afternoon':'Good evening';
-  document.getElementById('t-greeting').textContent = `${g}, ${name} 👋`;
+  el('t-greeting').textContent = `${g}, ${name} 👋`;
   show('templates');
 }
 
-function getDeviceId() {
-  return currentUser?.sub || 'anon';
-}
+function getDeviceId() { return currentUser?.sub || 'anon'; }
 
 function signOut() {
   localStorage.removeItem('zp_user');
   currentUser = null;
-  document.getElementById('signout-menu').classList.remove('open');
+  el('signout-menu').classList.remove('open');
   show('login');
   if (_clientId && window.google?.accounts?.id) {
     google.accounts.id.disableAutoSelect();
-    const wrap = document.getElementById('google-btn-wrap');
+    const wrap = el('google-btn-wrap');
     wrap.innerHTML = '';
     google.accounts.id.renderButton(wrap, {
       type:'standard', theme:'outline', size:'large',
@@ -622,11 +735,9 @@ function signOut() {
   }
 }
 
-function toggleSignOut() {
-  document.getElementById('signout-menu').classList.toggle('open');
-}
+function toggleSignOut() { el('signout-menu').classList.toggle('open'); }
 document.addEventListener('click', e => {
-  const m = document.getElementById('signout-menu');
+  const m = el('signout-menu');
   if (m.classList.contains('open') && !e.target.closest('.user-chip') && !e.target.closest('.signout-menu'))
     m.classList.remove('open');
 });
@@ -636,7 +747,9 @@ document.addEventListener('click', e => {
 ═════════════════════════════════════════════ */
 function show(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  document.getElementById('screen-' + id).classList.add('active');
+  el('screen-' + id).classList.add('active');
+  // Scroll messages to bottom when entering chat
+  if (id === 'chat') scrollDown();
 }
 
 function openTemplate(id) {
@@ -648,16 +761,15 @@ function openTemplate(id) {
    CHAT — SEND & POLL
 ═════════════════════════════════════════════ */
 async function sendMessage() {
-  const ta   = document.getElementById('ch-textarea');
+  const ta   = el('ch-textarea');
   const text = ta.value.trim();
   if (!text || _pollTimer) return;
 
   ta.value = ''; autoResize(ta);
   setBusy(true);
 
-  // hide empty state
-  const em = document.getElementById('ch-empty');
-  if (em) { em.style.display = 'none'; }
+  const em = el('ch-empty');
+  if (em) em.style.display = 'none';
 
   addUserBubble(text);
 
@@ -671,7 +783,7 @@ async function sendMessage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         text,
-        model:    document.getElementById('sel-model').value,
+        model:    el('sel-model').value,
         deviceId: getDeviceId(),
         template: _currentTemplate,
       }),
@@ -686,7 +798,7 @@ async function sendMessage() {
     addImageGroup(data.jobId, data.total);
     scrollDown();
 
-    _pollTimer = setInterval(() => pollJob(data.jobId), 1500);
+    _pollTimer = setInterval(() => pollJob(data.jobId, data.total), 1400);
 
   } catch(e) {
     el(thinkId)?.remove();
@@ -695,7 +807,7 @@ async function sendMessage() {
   }
 }
 
-async function pollJob(jobId) {
+async function pollJob(jobId, expectedTotal) {
   try {
     const res = await fetch(`/api/job?jobId=${encodeURIComponent(jobId)}`);
     const job = await res.json();
@@ -705,12 +817,12 @@ async function pollJob(jobId) {
       addImageCard(jobId, results[i], i);
       _seenCount++;
     }
-    updateGroupHd(jobId, job.done, job.total, job.status);
+    updateGroupHd(jobId, job.done, job.total || expectedTotal, job.status);
     scrollDown();
 
     if (job.status === 'done' || job.status === 'error' || job.status === 'expired') {
       clearInterval(_pollTimer);
-      _pollTimer = null;
+      _pollTimer   = null;
       _activeJobId = null;
       setBusy(false);
     }
@@ -739,8 +851,10 @@ function addImageGroup(jobId, total) {
   d.className = 'ch-bot-group'; d.id = `grp-${jobId}`;
   d.innerHTML = `
     <div class="ch-group-hd" id="ghd-${jobId}">
-      <div class="ch-dots"><span></span><span></span><span></span></div>
-      <span>Processing 0 of ${total}</span>
+      <div class="ch-group-hd-left">
+        <div class="ch-dots"><span></span><span></span><span></span></div>
+        <span>Processing 0 of ${total}</span>
+      </div>
     </div>
     <div class="ch-img-row" id="row-${jobId}"></div>`;
   msgs().appendChild(d);
@@ -749,10 +863,17 @@ function addImageGroup(jobId, total) {
 function updateGroupHd(jobId, done, total, status) {
   const hd = el(`ghd-${jobId}`); if (!hd) return;
   if (status === 'done') {
-    hd.innerHTML = `<i class="fas fa-check" style="color:var(--gn)"></i> ${done} image${done!==1?'s':''} ready`;
-    hd.querySelector('.ch-dots')?.remove();
+    const safeId = escHtml(jobId);
+    hd.innerHTML = `
+      <div class="ch-group-hd-left">
+        <i class="fas fa-check" style="color:var(--gn)"></i>
+        <span>${done} image${done !== 1 ? 's' : ''} ready</span>
+      </div>
+      <button class="ch-dl-all-btn" id="dlall-${safeId}" onclick="downloadAllImages('${safeId}', ${done})">
+        <i class="fas fa-cloud-arrow-down"></i> Download All
+      </button>`;
   } else {
-    const sp = hd.querySelector('span:last-child');
+    const sp = hd.querySelector('.ch-group-hd-left span');
     if (sp) sp.textContent = `Processing ${done} of ${total}`;
   }
 }
@@ -765,22 +886,27 @@ function addImageCard(jobId, result, index) {
   const card   = document.createElement('div');
   card.className = 'ch-img-card';
   card.style.animationDelay = (index % 6 * 60) + 'ms';
+  const jid  = escHtml(jobId);
   card.innerHTML = `
-    <div class="ch-img-wrap loading" id="wrap-${jobId}-${index}">
-      <img src="${imgSrc}" alt="${escHtml(result.title)}"
-        onload="el('wrap-${jobId}-${index}')?.classList.remove('loading')">
+    <div class="ch-img-wrap loading" id="wrap-${jid}-${index}">
+      <img src="${imgSrc}" alt="${escHtml(result.title || '')}"
+        onload="el('wrap-${jid}-${index}')?.classList.remove('loading')">
     </div>
     <div class="ch-img-actions">
-      <button class="ch-img-btn" id="share-${jobId}-${index}" onclick="shareImage('${jobId}',${index})" title="Share">
-        <i class="fas fa-share-nodes"></i>
+      <button class="ch-img-btn-share" id="share-${jid}-${index}"
+        onclick="shareImage('${jid}', ${index})" title="Share">
+        <i class="fas fa-share-nodes"></i> Share
       </button>
-      <button class="ch-img-btn" onclick="dlImage('${jobId}',${index})" title="Download PNG">
-        <i class="fas fa-download"></i>
-      </button>
-      <button class="ch-img-btn" id="copy-${jobId}-${index}"
-        onclick="copyTitle('${jobId}',${index})" title="Copy title">
-        <i class="fas fa-copy"></i>
-      </button>
+      <div class="ch-img-btns-row">
+        <button class="ch-img-btn" id="dl-${jid}-${index}"
+          onclick="dlImage('${jid}', ${index})" title="Download PNG">
+          <i class="fas fa-download"></i> Save
+        </button>
+        <button class="ch-img-btn" id="copy-${jid}-${index}"
+          onclick="copyTitle('${jid}', ${index})" title="Copy title">
+          <i class="fas fa-copy"></i> Copy
+        </button>
+      </div>
     </div>`;
   el(`row-${jobId}`)?.appendChild(card);
 }
@@ -801,12 +927,10 @@ function addErrorBubble(msg) {
 }
 
 /* ═════════════════════════════════════════════
-   IMAGE SHARE / DOWNLOAD (SVG → PNG via Canvas)
+   PNG BLOB CACHE — convert once, reuse for share+download
 ═════════════════════════════════════════════ */
-const _pngCache = {}; // jobId-index → Blob
-
 async function getPngBlob(jobId, index) {
-  const key = `${jobId}-${index}`;
+  const key = `${jobId}::${index}`;
   if (_pngCache[key]) return _pngCache[key];
   const svg  = _svgStore[jobId]?.[index];
   if (!svg) return null;
@@ -815,107 +939,137 @@ async function getPngBlob(jobId, index) {
   return blob;
 }
 
+/* ═════════════════════════════════════════════
+   SHARE IMAGE — native share sheet (iOS/Android)
+   falls back to download on desktop
+═════════════════════════════════════════════ */
 async function shareImage(jobId, index) {
-  const svg = _svgStore[jobId]?.[index]; if (!svg) return;
-
-  // Extract title from SVG
-  const match = svg.match(/<text[^>]*xml:space="preserve"[^>]*>([^<]+)<\/text>/);
-  const title = match
-    ? match[1].replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"')
-    : `Image ${index + 1}`;
-
-  try { await navigator.clipboard.writeText(title); } catch {}
-
   const btn = el(`share-${jobId}-${index}`);
-  if (btn) { btn.classList.add('saving'); btn.innerHTML = '<i class="fas fa-circle-notch spin"></i>'; }
+  if (btn) { btn.classList.add('saving'); btn.innerHTML = '<i class="fas fa-circle-notch spin"></i> Sharing…'; }
 
   try {
     const blob = await getPngBlob(jobId, index);
-    if (!blob) throw new Error('PNG conversion failed');
+    if (!blob) throw new Error('Image not ready');
+
+    // Try to extract clean title for sharing
+    const svg   = _svgStore[jobId]?.[index] || '';
+    const match = svg.match(/<text[^>]*>(?:<tspan[^>]*>)?([^<]+)/);
+    const title = match ? match[1].replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"') : `Image ${index + 1}`;
+    try { await navigator.clipboard.writeText(title); } catch {}
 
     const file = new File([blob], `luma_${index + 1}.png`, { type: 'image/png' });
 
     if (navigator.share) {
-      try {
-        if (navigator.canShare && navigator.canShare({ files: [file] })) {
-          await navigator.share({ files: [file], title, text: title });
-        } else {
-          await navigator.share({ title, text: title });
-        }
+      // Try with file (works on iOS Safari, Android Chrome)
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title, text: title });
         toast('Shared! Title copied.');
-        return;
-      } catch(e) {
-        if (e.name === 'AbortError') return; // user cancelled silently
-        // share failed → fall through to download
+      } else {
+        // Share without file — still opens share sheet on some browsers
+        await navigator.share({ title, text: title });
+        toast('Title copied & shared!');
       }
+      return;
     }
-    // Fallback: download
-    const url = URL.createObjectURL(blob);
-    const a   = Object.assign(document.createElement('a'), { href: url, download: `luma_${index + 1}.png` });
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+
+    // Desktop fallback: just download
+    triggerDownload(blob, `luma_${index + 1}.png`);
     toast('Saved! Title copied.');
   } catch(e) {
-    toast('Share failed: ' + e.message);
+    if (e.name === 'AbortError') return; // user cancelled — silent
+    toast('⚠️ ' + e.message);
   } finally {
-    if (btn) { btn.classList.remove('saving'); btn.innerHTML = '<i class="fas fa-share-nodes"></i>'; }
+    if (btn) { btn.classList.remove('saving'); btn.innerHTML = '<i class="fas fa-share-nodes"></i> Share'; }
   }
 }
 
+/* ═════════════════════════════════════════════
+   DOWNLOAD SINGLE IMAGE
+═════════════════════════════════════════════ */
 async function dlImage(jobId, index) {
-  const svg = _svgStore[jobId]?.[index];
-  if (!svg) return;
-
-  const btn = el(`copy-${jobId}-${index}`)?.previousElementSibling;
+  const btn = el(`dl-${jobId}-${index}`);
   if (btn) { btn.classList.add('saving'); btn.innerHTML = '<i class="fas fa-circle-notch spin"></i>'; }
 
   try {
     const blob = await getPngBlob(jobId, index);
-    if (!blob) throw new Error('Conversion failed');
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href = url; a.download = `luma_${index+1}.png`;
-    document.body.appendChild(a); a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    toast('Saved as PNG!');
-  } catch(e) {
-    // Fallback: download as SVG
-    const blob = new Blob([svg], { type:'image/svg+xml' });
-    const url  = URL.createObjectURL(blob);
-    const a    = Object.assign(document.createElement('a'), { href:url, download:`luma_${index+1}.svg` });
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    toast('Saved as SVG!');
+    if (blob) {
+      triggerDownload(blob, `luma_${index + 1}.png`);
+      toast('Saved as PNG!');
+    } else {
+      // SVG fallback
+      const svg  = _svgStore[jobId]?.[index];
+      const sblob = new Blob([svg], { type: 'image/svg+xml' });
+      triggerDownload(sblob, `luma_${index + 1}.svg`);
+      toast('Saved as SVG!');
+    }
   } finally {
-    if (btn) { btn.classList.remove('saving'); btn.innerHTML = '<i class="fas fa-download"></i>'; }
+    if (btn) { btn.classList.remove('saving'); btn.innerHTML = '<i class="fas fa-download"></i> Save'; }
   }
 }
 
+/* ═════════════════════════════════════════════
+   DOWNLOAD ALL IMAGES
+═════════════════════════════════════════════ */
+async function downloadAllImages(jobId, count) {
+  const btn = el(`dlall-${jobId}`);
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch spin"></i> Downloading…'; }
+
+  let downloaded = 0;
+  for (let i = 0; i < count; i++) {
+    try {
+      const blob = await getPngBlob(jobId, i);
+      if (blob) {
+        triggerDownload(blob, `luma_${i + 1}.png`);
+        downloaded++;
+        // small delay between triggers so browser doesn't block them
+        await sleep(350);
+      }
+    } catch {}
+  }
+
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-cloud-arrow-down"></i> Download All'; }
+  toast(`Downloaded ${downloaded} image${downloaded !== 1 ? 's' : ''}!`);
+}
+
+/* ═════════════════════════════════════════════
+   COPY TITLE
+═════════════════════════════════════════════ */
+async function copyTitle(jobId, index) {
+  const svg = _svgStore[jobId]?.[index]; if (!svg) return;
+  // First <text> element content (handles tspan bold too)
+  const match = svg.match(/<text[^>]*>(?:<tspan[^>]*>)?([^<]+)/);
+  const title = match ? match[1].replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"') : '';
+  try { await navigator.clipboard.writeText(title); } catch {}
+  const btn = el(`copy-${jobId}-${index}`); if (!btn) return;
+  btn.innerHTML = '<i class="fas fa-check" style="color:var(--gn)"></i> Done';
+  setTimeout(() => { btn.innerHTML = '<i class="fas fa-copy"></i> Copy'; }, 1800);
+  toast('Title copied!');
+}
+
+/* ═════════════════════════════════════════════
+   SVG → PNG CONVERSION
+═════════════════════════════════════════════ */
 function svgToPng(svgString) {
   return new Promise(resolve => {
     const img = new Image();
-    img.onload = () => {
-      const c = document.createElement('canvas');
-      c.width = 1080; c.height = 1920;
+    img.onload  = () => {
+      const c  = document.createElement('canvas');
+      c.width  = 1080; c.height = 1920;
       c.getContext('2d').drawImage(img, 0, 0, 1080, 1920);
-      c.toBlob(b => resolve(b), 'image/png');
+      c.toBlob(b => resolve(b || null), 'image/png');
     };
     img.onerror = () => resolve(null);
     img.src = svgSrc(svgString);
   });
 }
 
-async function copyTitle(jobId, index) {
-  const svg = _svgStore[jobId]?.[index]; if (!svg) return;
-  // Extract title from first SVG text element (supports xml:space attribute too)
-  const match = svg.match(/<text[^>]*>([^<]+)<\/text>/);
-  const title = match ? match[1].replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"') : '';
-  try { await navigator.clipboard.writeText(title); } catch {}
-  const btn = el(`copy-${jobId}-${index}`); if (!btn) return;
-  btn.innerHTML = '<i class="fas fa-check" style="color:var(--gn)"></i>';
-  setTimeout(() => { btn.innerHTML = '<i class="fas fa-copy"></i>'; }, 1800);
-  toast('Title copied!');
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a   = Object.assign(document.createElement('a'), { href: url, download: filename });
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 /* ═════════════════════════════════════════════
@@ -1006,10 +1160,11 @@ function clearChat() {
   m.appendChild(em);
 }
 
-function msgs()  { return el('ch-messages'); }
-function el(id)  { return document.getElementById(id); }
+function msgs()   { return el('ch-messages'); }
+function el(id)   { return document.getElementById(id); }
 function escHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function svgSrc(svg){ return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); }
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
 function scrollDown() {
   const m = el('ch-messages');
@@ -1024,29 +1179,29 @@ function setBusy(b) {
 let _toastTimer;
 function toast(msg) {
   const t = el('toast');
-  t.innerHTML = `<i class="fas fa-circle-check" style="color:var(--gn)"></i>${msg}`;
+  t.innerHTML = `<i class="fas fa-circle-check" style="color:var(--gn)"></i>${escHtml(msg)}`;
   t.style.display = 'flex';
   clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => t.style.display='none', 2600);
+  _toastTimer = setTimeout(() => t.style.display='none', 2800);
 }
 
-function autoResize(el) {
-  el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 180) + 'px';
+function autoResize(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 140) + 'px';
 }
 
-/* ── textarea ── */
+/* ── Textarea: auto-resize + Enter to send ── */
 document.addEventListener('DOMContentLoaded', () => {
   const ta = el('ch-textarea');
   if (ta) {
-    ta.addEventListener('input', () => autoResize(ta));
+    ta.addEventListener('input',   () => autoResize(ta));
     ta.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
     });
   }
 });
 
-/* ── init ── */
+/* ── Init Google Auth ── */
 window.onGoogleLibraryLoad = () => { initGoogleAuth(); };
 window.addEventListener('DOMContentLoaded', () => {
   if (window.google?.accounts?.id) { initGoogleAuth(); return; }
