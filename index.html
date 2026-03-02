@@ -235,7 +235,7 @@ select option { background:#1f2937; }
 
 /* ── Sign out dropdown ── */
 .signout-menu {
-  position:fixed; top:60px; right:16px; z-index:200;
+  position:fixed; top:68px; right:16px; z-index:200;
   background:#0d1117; border:1px solid var(--bd); border-radius:14px;
   padding:8px; min-width:200px; display:none;
   box-shadow:0 8px 32px rgba(0,0,0,.6);
@@ -297,19 +297,19 @@ select option { background:#1f2937; }
     <!-- Divider -->
     <div class="login-divider">sign in to continue</div>
 
-    <!-- Google button -->
-    <button class="google-btn" id="google-btn" onclick="googleSignIn()">
-      <svg width="20" height="20" viewBox="0 0 48 48">
-        <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-        <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-        <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-        <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-      </svg>
-      Continue with Google
-    </button>
+    <!-- Google renders its own button here via renderButton() -->
+    <div id="google-btn-wrap">
+      <div style="color:var(--mu);font-size:13px;display:flex;align-items:center;gap:8px">
+        <i class="fas fa-circle-notch spin"></i> Loading sign-in…
+      </div>
+    </div>
+    <!-- Setup notice if client ID missing -->
+    <div id="google-btn-wrap-notice" style="display:none;width:100%;text-align:center;color:#fcd34d;font-size:13px;padding:12px 0">
+      ⚠️ Google login not configured yet.
+    </div>
 
-    <!-- Hidden One Tap container -->
-    <div id="g_id_onload" data-client_id="" data-callback="onGoogleToken" data-auto_prompt="false"></div>
+    <!-- One Tap container -->
+    <div id="g_id_onload" data-client_id="" data-callback="onGoogleToken" data-auto_prompt="true"></div>
 
     <p class="login-note">
       🔒 Your data is private &amp; tied to your Google account.<br>
@@ -319,12 +319,69 @@ select option { background:#1f2937; }
   </div>
 </div>
 
+<!-- ══ TEMPLATES SCREEN ══ -->
+<div id="screen-templates" class="screen">
+  <div class="tmpl-header">
+    <div class="tmpl-brand">LUMA</div>
+    <div class="user-chip" onclick="toggleSignOut()">
+      <img id="user-avatar-tmpl" class="user-avatar" src="" alt="">
+      <span id="user-name-tmpl" class="user-name"></span>
+      <i class="fas fa-chevron-down" style="font-size:10px;color:var(--mu2)"></i>
+    </div>
+  </div>
+  <div class="tmpl-body">
+    <div class="tmpl-greeting" id="tmpl-greeting">Good day 👋</div>
+    <div class="tmpl-sub">Choose a template to get started</div>
+    <div class="tmpl-grid">
+
+      <!-- Template 1: Image Generator -->
+      <div class="tmpl-card" onclick="openTemplate('imggen')" style="animation-delay:0ms">
+        <div class="tmpl-badge">ACTIVE</div>
+        <div class="tmpl-icon" style="background:linear-gradient(135deg,#6366f1,#8b5cf6)">🎨</div>
+        <div class="tmpl-name">Image Generator</div>
+        <div class="tmpl-desc">Turn any text into shareable 9:16 images</div>
+      </div>
+
+      <!-- Future templates (coming soon) -->
+      <div class="tmpl-card tmpl-coming" style="animation-delay:60ms">
+        <div class="tmpl-badge" style="background:rgba(107,114,128,.15);border-color:rgba(107,114,128,.2);color:var(--mu)">SOON</div>
+        <div class="tmpl-icon" style="background:linear-gradient(135deg,#0f172a,#1e293b)">📊</div>
+        <div class="tmpl-name">Data Cards</div>
+        <div class="tmpl-desc">Stats and metrics as visual cards</div>
+      </div>
+
+      <div class="tmpl-card tmpl-coming" style="animation-delay:120ms">
+        <div class="tmpl-badge" style="background:rgba(107,114,128,.15);border-color:rgba(107,114,128,.2);color:var(--mu)">SOON</div>
+        <div class="tmpl-icon" style="background:linear-gradient(135deg,#0f172a,#1e293b)">💬</div>
+        <div class="tmpl-name">Quote Maker</div>
+        <div class="tmpl-desc">Beautiful quote cards for social</div>
+      </div>
+
+      <div class="tmpl-card tmpl-coming" style="animation-delay:180ms">
+        <div class="tmpl-badge" style="background:rgba(107,114,128,.15);border-color:rgba(107,114,128,.2);color:var(--mu)">SOON</div>
+        <div class="tmpl-icon" style="background:linear-gradient(135deg,#0f172a,#1e293b)">🗓️</div>
+        <div class="tmpl-name">Event Post</div>
+        <div class="tmpl-desc">Announcements &amp; event promos</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
 <!-- ══ IDLE SCREEN ══ -->
 <div id="screen-idle" class="screen">
   <div class="inner">
-    <div style="margin-bottom:32px">
-      <div style="font-size:48px;font-weight:900;letter-spacing:-2px;line-height:1;margin-bottom:6px;background:linear-gradient(135deg,#fff,#c4b5fd);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">LUMA</div>
-      <div style="color:var(--mu);font-size:14px;font-weight:500">AI Image Generator · Cloudflare AI</div>
+    <div style="margin-bottom:28px">
+      <button onclick="show('templates')" style="background:none;border:none;color:var(--mu);font-size:13px;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:6px;margin-bottom:16px;padding:0">
+        <i class="fas fa-arrow-left"></i> Templates
+      </button>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
+        <div style="width:44px;height:44px;border-radius:14px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">🎨</div>
+        <div>
+          <div style="font-size:22px;font-weight:900;letter-spacing:-.5px">Image Generator</div>
+          <div style="color:var(--mu);font-size:13px">Cloudflare AI · 9:16 format</div>
+        </div>
+      </div>
     </div>
 
     <textarea id="inp-text" rows="8" placeholder="Paste your content here — zodiac, quotes, tips, any text…"
@@ -352,14 +409,7 @@ select option { background:#1f2937; }
       </div>
     </div>
 
-    <!-- User chip bottom -->
-    <div style="margin-top:24px;display:flex;justify-content:center">
-      <div class="user-chip" onclick="toggleSignOut()">
-        <img id="user-avatar" class="user-avatar" src="" alt="">
-        <span id="user-name" class="user-name"></span>
-        <i class="fas fa-chevron-down" style="font-size:10px;color:var(--mu2)"></i>
-      </div>
-    </div>
+
   </div>
 </div>
 
@@ -380,7 +430,7 @@ select option { background:#1f2937; }
       <div class="user-chip" onclick="toggleSignOut()" style="padding:4px 10px 4px 4px">
         <img id="user-avatar-top" class="user-avatar" src="" alt="" style="width:22px;height:22px">
       </div>
-      <button class="btn-circle" onclick="reset()"><i class="fas fa-xmark"></i></button>
+      <button class="btn-circle" onclick="reset()" title="Back to templates"><i class="fas fa-xmark"></i></button>
     </div>
   </div>
 
@@ -493,7 +543,7 @@ async function idbGetAll(prefix) {
 let _clientId = '';
 
 async function initGoogleAuth() {
-  // Check if already logged in (localStorage) — skip fetch if so
+  // Already logged in — skip straight to app
   const saved = localStorage.getItem('zp_user');
   if (saved) {
     try {
@@ -503,34 +553,43 @@ async function initGoogleAuth() {
     } catch(e) { localStorage.removeItem('zp_user'); }
   }
 
-  // Fetch Google Client ID from Cloudflare Secret via /config
+  // Fetch Client ID from Cloudflare Secret
   try {
     const res = await fetch('/config');
     const cfg = await res.json();
     _clientId = cfg.googleClientId || '';
   } catch(e) {}
 
+  const wrap = document.getElementById('google-btn-wrap');
+
   if (!_clientId) {
+    wrap.innerHTML = '';
+    document.getElementById('google-btn-wrap-notice').style.display = 'block';
     document.getElementById('setup-notice').style.display = 'block';
-    document.getElementById('google-btn').disabled = true;
-    document.getElementById('google-btn').style.opacity = '.4';
     return;
   }
 
-  document.getElementById('g_id_onload').setAttribute('data-client_id', _clientId);
-
-  // Init Google One Tap (auto-prompt)
+  // Initialize GSI
   google.accounts.id.initialize({
     client_id: _clientId,
     callback: onGoogleToken,
-    auto_select: true,
+    auto_select: false,
+    cancel_on_tap_outside: false,
   });
-  google.accounts.id.prompt();
-}
 
-function googleSignIn() {
-  if (!_clientId) return;
-  google.accounts.id.initialize({ client_id: _clientId, callback: onGoogleToken });
+  // Render Google's official button — this ALWAYS works on click, no browser blocking
+  wrap.innerHTML = '';
+  google.accounts.id.renderButton(wrap, {
+    type: 'standard',
+    theme: 'outline',
+    size: 'large',
+    text: 'continue_with',
+    shape: 'rectangular',
+    logo_alignment: 'left',
+    width: wrap.offsetWidth || 320,
+  });
+
+  // Also try One Tap (may or may not show depending on browser)
   google.accounts.id.prompt();
 }
 
@@ -548,15 +607,33 @@ function onGoogleToken(response) {
 }
 
 function enterApp() {
-  // Set user info in UI
-  const name  = currentUser.name?.split(' ')[0] || 'User';
-  const pic   = currentUser.picture || '';
-  document.getElementById('user-name').textContent   = name;
-  document.getElementById('user-avatar').src         = pic;
-  document.getElementById('user-avatar-top').src     = pic;
-  document.getElementById('so-name').textContent     = currentUser.name || '';
-  document.getElementById('so-email').textContent    = currentUser.email || '';
-  show('idle');
+  const name = currentUser.name?.split(' ')[0] || 'User';
+  const pic  = currentUser.picture || '';
+  // Update all avatar spots
+  ['user-avatar-tmpl','user-avatar-top'].forEach(id => {
+    const el = document.getElementById(id); if(el) el.src = pic;
+  });
+  ['user-name-tmpl'].forEach(id => {
+    const el = document.getElementById(id); if(el) el.textContent = name;
+  });
+  document.getElementById('so-name').textContent  = currentUser.name || '';
+  document.getElementById('so-email').textContent = currentUser.email || '';
+  // Greeting
+  const h = new Date().getHours();
+  const greet = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  document.getElementById('tmpl-greeting').textContent = `${greet}, ${name} 👋`;
+  // Update result topbar avatar too
+  const avatarTop = document.getElementById('user-avatar-top'); if(avatarTop) avatarTop.src = pic;
+  show('templates');
+}
+
+let _currentTemplate = 'imggen'; // tracks which template is open
+function openTemplate(templateId) {
+  _currentTemplate = templateId;
+  if (templateId === 'imggen') {
+    show('idle');
+  }
+  // future templates: add more cases here
 }
 
 function getDeviceId() {
@@ -573,10 +650,16 @@ function signOut() {
   currentUser = null;
   document.getElementById('signout-menu').classList.remove('open');
   show('login');
-  // Revoke Google session so One Tap shows again
-  if (_clientId) {
-    google.accounts.id.initialize({ client_id: _clientId, callback: onGoogleToken });
-    google.accounts.id.prompt();
+  // Re-render the Google button fresh
+  if (_clientId && window.google?.accounts?.id) {
+    google.accounts.id.disableAutoSelect();
+    const wrap = document.getElementById('google-btn-wrap');
+    wrap.innerHTML = '';
+    google.accounts.id.renderButton(wrap, {
+      type: 'standard', theme: 'outline', size: 'large',
+      text: 'continue_with', shape: 'rectangular',
+      logo_alignment: 'left', width: wrap.offsetWidth || 320,
+    });
   }
 }
 
@@ -827,7 +910,7 @@ async function generate() {
     const list = document.getElementById('list-inner');
     list.innerHTML = '';
     posts.forEach((p,i) => list.appendChild(buildPostItem(p,i)));
-    _currentSessionKey = `sess:${getDeviceId()}:${Date.now()}`;
+    _currentSessionKey = `sess:${getDeviceId()}:${_currentTemplate}:${Date.now()}`;
     updateStatus();
     show('result');
     processNext();
@@ -908,7 +991,7 @@ async function saveHistory(postsData, sessionKey) {
   const label = cleanedPosts[0]?.title || 'Session';
   const count = cleanedPosts.length;
   const ts = Date.now();
-  const payload = { deviceId, posts: cleanedPosts, timestamp: ts, label, count, sessionKey: sessionKey || `sess:${deviceId}:${ts}` };
+  const payload = { deviceId, posts: cleanedPosts, timestamp: ts, label, count, template: _currentTemplate, sessionKey: sessionKey || `sess:${deviceId}:${_currentTemplate}:${ts}` };
 
   try {
     const res  = await fetch('/history', {
@@ -937,7 +1020,7 @@ async function openHistory() {
     return;
   }
   try {
-    const res  = await fetch(`/history?deviceId=${encodeURIComponent(deviceId)}`);
+    const res  = await fetch(`/history?deviceId=${encodeURIComponent(deviceId)}&template=${encodeURIComponent(_currentTemplate)}`);
     const d    = await res.json();
     if (d.error) throw new Error(d.error);
     renderHistory(d.sessions||[]);
@@ -1070,23 +1153,36 @@ function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
 /* ══ Reset ══ */
 function reset() {
   posts=[]; rsts=[]; blobs=[]; queue=[]; active=new Set(); usedFilenames=new Set();
+  _currentSessionKey = null;
   Object.keys(_fnMap).forEach(k => delete _fnMap[k]);
   document.getElementById('capture-zone').innerHTML='';
   document.getElementById('list-inner').innerHTML='';
   document.getElementById('inp-text').value='';
   document.getElementById('post-list').style.paddingBottom='16px';
   hideErr();
-  show('idle');
+  show('templates');
 }
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
 /* ══ Init ══ */
-// Google GSI calls this when ready
+// Google GSI calls this when ready (fires when GSI script loads)
 window.onGoogleLibraryLoad = () => { initGoogleAuth(); };
-// Also try on load in case script already loaded
-window.addEventListener('load', () => {
+// Fallback: if GSI already loaded before this script ran
+window.addEventListener('DOMContentLoaded', () => {
   if (window.google?.accounts?.id) initGoogleAuth();
+  else {
+    // Wait up to 5s for GSI to load
+    let attempts = 0;
+    const wait = setInterval(() => {
+      if (window.google?.accounts?.id) { clearInterval(wait); initGoogleAuth(); }
+      else if (++attempts > 50) {
+        clearInterval(wait);
+        const w = document.getElementById('google-btn-wrap');
+        if (w) w.innerHTML = '<span style="color:var(--rd);font-size:13px">⚠️ Google sign-in failed to load</span>';
+      }
+    }, 100);
+  }
 });
 </script>
 </body>
