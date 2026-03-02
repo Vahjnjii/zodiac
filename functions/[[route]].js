@@ -199,61 +199,78 @@ function json(data, status, headers) {
 // ── SVG Image Generator ─────────────────────────────────
 // Generates a 1080×1920 SVG entirely server-side.
 // No browser needed — stored in KV, served as data URI.
+const EMOJI_FONT = `'Apple Color Emoji','Noto Color Emoji','Segoe UI Emoji','Segoe UI Symbol'`;
+const BASE_FONT  = `ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif,${EMOJI_FONT}`;
+
 function generateSVG(post) {
-  const W = 1080, H = 1920, PX = 92;
-  const CW = W - PX * 2; // 896px usable width
+  const W = 1080, H = 1920, PX = 92, PY = 120;
+  const CW      = W - PX * 2;          // 896px usable width
+  const MAX_H   = H - PY * 2;          // max usable height
+  const BOTTOM  = H - PY;              // hard bottom boundary
 
   const title   = (post.title   || '').trim();
   const content = (post.content || []);
 
-  // Adaptive font sizing
-  const len = title.length + content.join('').length;
+  // Adaptive font sizing — use visual length (emojis count as 2)
+  const len = visualLen(title) + visualLen(content.join(''));
   let ts, bs, tlh, blh, gap;
-  if      (len < 120) { ts=76; bs=50; tlh=104; blh=72; gap=60; }
-  else if (len < 250) { ts=68; bs=45; tlh= 94; blh=66; gap=54; }
-  else if (len < 420) { ts=60; bs=40; tlh= 84; blh=58; gap=48; }
-  else if (len < 620) { ts=52; bs=36; tlh= 74; blh=52; gap=42; }
-  else                { ts=44; bs=32; tlh= 64; blh=46; gap=36; }
+  if      (len < 100) { ts=76; bs=50; tlh=108; blh=72; gap=60; }
+  else if (len < 200) { ts=68; bs=45; tlh= 96; blh=66; gap=52; }
+  else if (len < 350) { ts=60; bs=40; tlh= 84; blh=58; gap=46; }
+  else if (len < 550) { ts=52; bs=36; tlh= 74; blh=52; gap=40; }
+  else if (len < 800) { ts=44; bs=32; tlh= 64; blh=46; gap=34; }
+  else                { ts=38; bs=28; tlh= 56; blh=40; gap=28; }
 
-  // Chars per line (avg char ≈ 0.54× font size for sans-serif)
-  const tCPL = Math.floor(CW / (ts * 0.54));
-  const bCPL = Math.floor(CW / (bs * 0.54));
+  // Chars per line — use 0.56× for mixed text, emoji counts as 2 chars
+  const tCPL = Math.floor(CW / (ts * 0.56));
+  const bCPL = Math.floor(CW / (bs * 0.56));
 
-  const titleLines = wrap(title, tCPL);
+  const titleLines = wrapVisual(title, tCPL);
 
   const bodyLines = [];
   for (const line of content) {
     if (!(line || '').trim()) {
       bodyLines.push({ t: '', gap: true });
     } else {
-      for (const w of wrap(line, bCPL)) bodyLines.push({ t: w, gap: false });
+      for (const w of wrapVisual(line, bCPL)) bodyLines.push({ t: w, gap: false });
     }
   }
 
-  // Calculate block height → vertical center
-  const titleH = titleLines.length * tlh;
-  const bodyH  = bodyLines.reduce((s, l) => s + (l.gap ? blh * 0.5 : blh), 0);
-  const totalH = titleH + (bodyLines.length ? gap + bodyH : 0);
-  let y = Math.max(PX + ts, Math.floor((H - totalH) / 2) + ts);
+  // Calculate total block height
+  const titleH  = titleLines.length * tlh;
+  const bodyH   = bodyLines.reduce((s, l) => s + (l.gap ? blh * 0.5 : blh), 0);
+  const totalH  = titleH + (bodyLines.length ? gap + bodyH : 0);
 
+  // Vertically center, but always start at least PY from top
+  let startY = Math.max(PY + ts, Math.floor((H - totalH) / 2) + ts);
+
+  // If block is taller than usable height, start from top
+  if (totalH > MAX_H) startY = PY + ts;
+
+  let y = startY;
   const els = [];
 
-  // Title
+  // Title lines
   for (const line of titleLines) {
-    els.push(`<text x="${PX}" y="${y}" font-family="ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="${ts}" font-weight="800" fill="#FFFFFF">${x(line)}</text>`);
+    if (y - ts > BOTTOM) break; // hard clip — never draw outside canvas
+    els.push(`<text x="${PX}" y="${y}" font-family="${BASE_FONT}" font-size="${ts}" font-weight="800" fill="#FFFFFF" xml:space="preserve">${x(line)}</text>`);
     y += tlh;
   }
 
   // Accent line between title and body
   if (bodyLines.length) {
-    els.push(`<rect x="${PX}" y="${y + Math.floor(gap * 0.3)}" width="40" height="3" rx="2" fill="rgba(139,92,246,0.6)"/>`);
+    const accentY = y + Math.floor(gap * 0.3);
+    if (accentY < BOTTOM) {
+      els.push(`<rect x="${PX}" y="${accentY}" width="40" height="3" rx="2" fill="rgba(139,92,246,0.7)"/>`);
+    }
     y += gap;
   }
 
-  // Body
+  // Body lines
   for (const line of bodyLines) {
+    if (y - bs > BOTTOM) break; // hard clip
     if (!line.gap) {
-      els.push(`<text x="${PX}" y="${y}" font-family="ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="${bs}" font-weight="400" fill="rgba(255,255,255,0.78)">${x(line.t)}</text>`);
+      els.push(`<text x="${PX}" y="${y}" font-family="${BASE_FONT}" font-size="${bs}" font-weight="400" fill="rgba(255,255,255,0.82)" xml:space="preserve">${x(line.t)}</text>`);
     }
     y += line.gap ? blh * 0.5 : blh;
   }
@@ -265,25 +282,48 @@ function generateSVG(post) {
     <stop offset="0%" stop-color="#06020f"/>
     <stop offset="100%" stop-color="#00091a"/>
   </linearGradient>
+  <clipPath id="clip"><rect width="${W}" height="${H}"/></clipPath>
 </defs>
 <rect width="${W}" height="${H}" fill="url(#g)"/>
+<g clip-path="url(#clip)">
 ${els.join('\n')}
+</g>
 </svg>`;
 }
 
-function wrap(text, cpl) {
+// Count visual width: emojis and wide chars count as 2
+function visualLen(str) {
+  let n = 0;
+  for (const ch of [...(str || '')]) {
+    const cp = ch.codePointAt(0);
+    if (cp >= 0x1F000 || (cp >= 0x2600 && cp <= 0x27FF) || (cp >= 0xFE00 && cp <= 0xFE0F)) n += 2;
+    else n += 1;
+  }
+  return n;
+}
+
+// Word-wrap respecting visual (emoji-aware) char width
+function wrapVisual(text, cpl) {
   if (!text) return [''];
-  const words = text.split(' ');
-  const lines = [];
-  let cur = '';
+  const words  = text.split(' ');
+  const lines  = [];
+  let cur = '', curLen = 0;
   for (const word of words) {
-    const test = cur ? `${cur} ${word}` : word;
-    if (test.length > cpl && cur) { lines.push(cur); cur = word; }
-    else cur = test;
+    const wLen = visualLen(word);
+    const sep  = cur ? 1 : 0;
+    if (curLen + sep + wLen > cpl && cur) {
+      lines.push(cur);
+      cur = word; curLen = wLen;
+    } else {
+      cur = cur ? `${cur} ${word}` : word;
+      curLen += sep + wLen;
+    }
   }
   if (cur) lines.push(cur);
   return lines.length ? lines : [''];
 }
+
+function wrap(text, cpl) { return wrapVisual(text, cpl); }
 
 function x(s) { // XML/SVG escape
   return (s || '')
