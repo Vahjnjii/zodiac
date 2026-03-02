@@ -398,6 +398,26 @@ html,body{
         <div class="t-card-go"><i class="fas fa-arrow-right"></i></div>
       </div>
     </div>
+
+    <div class="t-card" onclick="openTemplate('vidgen')" style="margin-top:14px">
+      <div class="t-card-glow" style="background:radial-gradient(circle at 60% 40%,rgba(239,68,68,.18),transparent 70%)"></div>
+      <div class="t-card-body">
+        <div class="t-card-icon">🎬</div>
+        <div>
+          <div class="t-card-eyebrow">Template · Active</div>
+          <div class="t-card-name">Video Generator</div>
+          <div class="t-card-desc">Type your text + pick a duration. A video clip renders with your overlay text — share directly.</div>
+        </div>
+      </div>
+      <div class="t-card-footer">
+        <div class="t-tags">
+          <span class="t-tag">9:16 video</span>
+          <span class="t-tag">Direct share</span>
+          <span class="t-tag">Kaggle clips</span>
+        </div>
+        <div class="t-card-go"><i class="fas fa-arrow-right"></i></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -406,8 +426,8 @@ html,body{
   <div class="ch-nav">
     <button class="ch-nav-back" onclick="show('templates')"><i class="fas fa-arrow-left"></i></button>
     <div class="ch-nav-center">
-      <div class="ch-nav-icon">🎨</div>
-      <div class="ch-nav-title">Image Generator</div>
+      <div class="ch-nav-icon" id="ch-nav-icon">🎨</div>
+      <div class="ch-nav-title" id="ch-nav-title">Image Generator</div>
     </div>
     <div class="ch-nav-right">
       <select class="ch-model-sel" id="sel-model">
@@ -428,6 +448,17 @@ html,body{
       <div class="ch-empty-icon">✨</div>
       <div class="ch-empty-title">Ready to generate</div>
       <div class="ch-empty-sub">Paste your content below and hit send. Each post becomes a 9:16 image.</div>
+    </div>
+  </div>
+  <!-- Duration row — only shown in vidgen mode -->
+  <div id="vid-duration-row" style="display:none;padding:0 12px 6px;max-width:480px;margin:0 auto;width:100%">
+    <div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:8px 14px">
+      <i class="fas fa-clock" style="color:rgba(255,255,255,.4);font-size:12px"></i>
+      <span style="font-size:12px;color:rgba(255,255,255,.5);white-space:nowrap">Duration</span>
+      <input id="vid-duration" type="range" min="10" max="120" value="30" step="5"
+        oninput="el('vid-dur-val').textContent=this.value+'s'"
+        style="flex:1;accent-color:#8b5cf6;cursor:pointer">
+      <span id="vid-dur-val" style="font-size:13px;font-weight:700;color:#a78bfa;min-width:36px;text-align:right">30s</span>
     </div>
   </div>
   <div class="ch-input-bar">
@@ -627,7 +658,22 @@ function show(id) {
   el('screen-' + id).classList.add('active');
   if (id === 'chat') scrollDown();
 }
-function openTemplate(id) { _currentTemplate = id; show('chat'); }
+function openTemplate(id) {
+  _currentTemplate = id;
+  const isVid = id === 'vidgen';
+  // Update nav icon + title
+  const icon  = el('ch-nav-icon');
+  const title = el('ch-nav-title');
+  if (icon)  icon.textContent  = isVid ? '🎬' : '🎨';
+  if (title) title.textContent = isVid ? 'Video Generator' : 'Image Generator';
+  // Show/hide duration row
+  const dr = el('vid-duration-row');
+  if (dr) dr.style.display = isVid ? 'block' : 'none';
+  // Update placeholder
+  const ta = el('ch-textarea');
+  if (ta) ta.placeholder = isVid ? 'Type the text to overlay on your video…' : 'Paste your content here…';
+  show('chat');
+}
 
 /* ═════════════════════════════════════════════
    SEND & POLL
@@ -642,28 +688,51 @@ async function sendMessage() {
   const em = el('ch-empty'); if (em) em.style.display = 'none';
   addUserBubble(text);
   const thinkId = 'think-' + Date.now();
-  addThinking(thinkId);
-  scrollDown();
 
-  try {
-    const res  = await fetch('/api', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, model: el('sel-model').value, deviceId: getDeviceId(), template: _currentTemplate }),
-    });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-
-    el(thinkId)?.remove();
-    _seenCount = 0;
-    addImageGroup(data.jobId, data.total);
+  if (_currentTemplate === 'vidgen') {
+    // ── VIDEO FLOW ──
+    const duration = parseInt(el('vid-duration')?.value || '30', 10);
+    addThinkingVideo(thinkId);
     scrollDown();
-    _pollTimer = setInterval(() => pollJob(data.jobId, data.total), 1400);
-
-  } catch(e) {
-    el(thinkId)?.remove();
-    addErrorBubble(e.message);
-    setBusy(false);
+    try {
+      const res  = await fetch('/api/video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, duration, deviceId: getDeviceId() }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      el(thinkId)?.remove();
+      addVideoGroup(data.jobId);
+      scrollDown();
+      _pollTimer = setInterval(() => pollVideoJob(data.jobId), 3000);
+    } catch(e) {
+      el(thinkId)?.remove();
+      addErrorBubble(e.message);
+      setBusy(false);
+    }
+  } else {
+    // ── IMAGE FLOW (original) ──
+    addThinking(thinkId);
+    scrollDown();
+    try {
+      const res  = await fetch('/api', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, model: el('sel-model').value, deviceId: getDeviceId(), template: _currentTemplate }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      el(thinkId)?.remove();
+      _seenCount = 0;
+      addImageGroup(data.jobId, data.total);
+      scrollDown();
+      _pollTimer = setInterval(() => pollJob(data.jobId, data.total), 1400);
+    } catch(e) {
+      el(thinkId)?.remove();
+      addErrorBubble(e.message);
+      setBusy(false);
+    }
   }
 }
 
@@ -709,6 +778,118 @@ function addThinking(id) {
   d.className = 'ch-thinking'; d.id = id;
   d.innerHTML = `<div class="ch-dots"><span></span><span></span><span></span></div> Generating images…`;
   msgs().appendChild(d);
+}
+
+function addThinkingVideo(id) {
+  const d = document.createElement('div');
+  d.className = 'ch-thinking'; d.id = id;
+  d.innerHTML = `<div class="ch-dots"><span></span><span></span><span></span></div> Sending to render server…`;
+  msgs().appendChild(d);
+}
+
+/* ── Video poll ───────────────────────────────────────── */
+async function pollVideoJob(jobId) {
+  try {
+    const res = await fetch(`/api/job?jobId=${encodeURIComponent(jobId)}`);
+    const job = await res.json();
+
+    updateVideoGroup(jobId, job);
+
+    if (job.status === 'done' || job.status === 'error' || job.status === 'expired') {
+      clearInterval(_pollTimer); _pollTimer = null;
+      setBusy(false);
+      if (job.status === 'done' && job.videoUrl) {
+        showVideoCard(jobId, job.videoUrl, job.label || 'Video');
+      } else if (job.status === 'error') {
+        addErrorBubble(job.error || 'Video rendering failed. Check GitHub Actions logs.');
+      }
+    }
+  } catch {}
+}
+
+function addVideoGroup(jobId) {
+  const d = document.createElement('div');
+  d.className = 'ch-bot-group'; d.id = `grp-${escHtml(jobId)}`;
+  d.innerHTML = `
+    <div class="ch-group-hd" id="ghd-${escHtml(jobId)}">
+      <div class="ch-group-hd-left">
+        <div class="ch-dots"><span></span><span></span><span></span></div>
+        <span>Rendering video on server… (1–2 min)</span>
+      </div>
+    </div>
+    <div class="ch-img-row" id="row-${escHtml(jobId)}"></div>`;
+  msgs().appendChild(d);
+}
+
+function updateVideoGroup(jobId, job) {
+  const hd = el(`ghd-${jobId}`); if (!hd) return;
+  if (job.status === 'processing') {
+    const sp = hd.querySelector('.ch-group-hd-left span');
+    if (sp) sp.textContent = 'Rendering video on server… (1–2 min)';
+  } else if (job.status === 'done') {
+    hd.innerHTML = `<div class="ch-group-hd-left"><i class="fas fa-check" style="color:var(--gn)"></i><span>Video ready!</span></div>`;
+  } else if (job.status === 'error') {
+    hd.innerHTML = `<div class="ch-group-hd-left"><i class="fas fa-triangle-exclamation" style="color:#ef4444"></i><span>Rendering failed</span></div>`;
+  }
+}
+
+function showVideoCard(jobId, videoUrl, label) {
+  const row  = el(`row-${jobId}`); if (!row) return;
+  const jid  = escHtml(jobId);
+  const card = document.createElement('div');
+  card.className = 'ch-img-card';
+  card.id        = `vcard-${jid}`;
+  card.innerHTML = `
+    <div style="position:relative;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:9/16;max-height:420px">
+      <video id="vid-${jid}" src="${escHtml(videoUrl)}" playsinline muted loop
+        style="width:100%;height:100%;object-fit:cover"
+        onloadeddata="this.play()"></video>
+      <div style="position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,.5);border-radius:6px;padding:3px 8px;font-size:11px;color:#fff">${escHtml(label)}</div>
+    </div>
+    <div class="ch-img-actions">
+      <button class="ch-img-btn-share" onclick="shareVideo('${jid}','${escHtml(videoUrl)}','${escHtml(label)}')">
+        <i class="fas fa-share-nodes"></i> Share
+      </button>
+      <div class="ch-img-btns-row">
+        <button class="ch-img-btn" onclick="dlVideo('${escHtml(videoUrl)}','${escHtml(label)}')">
+          <i class="fas fa-download"></i> Save
+        </button>
+      </div>
+    </div>`;
+  row.appendChild(card);
+  scrollDown();
+}
+
+/* ── Video share / download ───────────────────────────── */
+async function shareVideo(jobId, url, label) {
+  const btn = document.querySelector(`#vcard-${jobId} .ch-img-btn-share`);
+  if (btn) { btn.classList.add('saving'); btn.innerHTML = '<i class="fas fa-circle-notch spin"></i> Sharing…'; }
+  try {
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    const file = new File([blob], randName('mp4'), { type: 'video/mp4' });
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: label, text: label });
+    } else {
+      triggerDownload(blob, randName('mp4'));
+    }
+    toast('Shared! ✓');
+  } catch(e) {
+    if (e.name !== 'AbortError') toast('⚠️ ' + e.message);
+  } finally {
+    if (btn) { btn.classList.remove('saving'); btn.innerHTML = '<i class="fas fa-share-nodes"></i> Share'; }
+  }
+}
+
+async function dlVideo(url, label) {
+  try {
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    triggerDownload(blob, randName('mp4'));
+    toast('Video saved! ✓');
+  } catch(e) {
+    toast('⚠️ ' + e.message);
+  }
 }
 
 function addImageGroup(jobId, total) {
@@ -996,9 +1177,10 @@ function renderHistory(sessions) {
     const label = escHtml(s.label || 'Session');
     const jid   = escHtml(s.jobId);
     const cnt   = s.status === 'done' ? done : `${done}/${total}`;
+    const badge = s.template === 'vidgen' ? 'VID' : 'IMG';
     return `<div class="hist-item" onclick="loadSession('${jid}')">
       <div class="hist-item-top">
-        <span class="hist-badge">${cnt} IMG</span>
+        <span class="hist-badge">${cnt} ${badge}</span>
         <span class="hist-label">${label}</span>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between">
@@ -1018,18 +1200,25 @@ async function loadSession(jobId) {
     const r   = await fetch(`/api/job?jobId=${encodeURIComponent(jobId)}`);
     const job = await r.json();
     el('hist-load')?.remove();
-    if (!job.results?.length && job.status === 'expired') {
+    if (job.status === 'expired') {
       addErrorBubble('This session has expired (older than 3 days).'); return;
     }
-    // Cache titles from loaded session
+    addSessionLabel(job.timestamp);
+
+    // ── Video session ──
+    if (job.template === 'vidgen') {
+      addVideoGroup(jobId);
+      updateVideoGroup(jobId, job);
+      if (job.status === 'done' && job.videoUrl) showVideoCard(jobId, job.videoUrl, job.label || 'Video');
+      scrollDown(); return;
+    }
+
+    // ── Image session ──
     if (!_titleStore[jobId]) _titleStore[jobId] = [];
     (job.results || []).forEach((r, i) => { if (r.title) _titleStore[jobId][i] = r.title; });
-
-    addSessionLabel(job.timestamp);
     addImageGroup(jobId, job.total);
     for (let i = 0; i < (job.results||[]).length; i++) addImageCard(jobId, job.results[i], i);
     updateGroupHd(jobId, job.done, job.total, job.status);
-    // Restore interaction states (persisted from localStorage)
     restoreJobStates(jobId, (job.results||[]).length);
     scrollDown();
   } catch(e) {
