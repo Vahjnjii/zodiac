@@ -269,28 +269,32 @@ const BASE_FONT  = `ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Se
 
 function generateSVG(post) {
   const W = 1080, H = 1920;
-  const PX = 88, PY = 130;
-  const CW     = W - PX * 2;   // 904px usable
+  // PX = 110px ≈ visually 3-4cm margin on a standard phone display
+  const PX = 110, PY = 130;
+  const CW     = W - PX * 2;   // 860px usable width
   const BOTTOM = H - PY;       // 1790 — hard floor
 
   const rawTitle = (post.title   || '').trim();
   const content  = (post.content || []);
   const plainT   = cleanText(rawTitle);
 
-  // Adaptive sizing based on visual length
+  // Adaptive sizing — all font sizes increased 20% from previous values
   const visLen = charVisLen(plainT) + charVisLen(content.map(l => cleanText(l||'')).join(''));
   let ts, bs, tlh, blh, gap;
-  if      (visLen < 80)  { ts=80; bs=52; tlh=112; blh=76; gap=64; }
-  else if (visLen < 150) { ts=72; bs=46; tlh=100; blh=68; gap=56; }
-  else if (visLen < 260) { ts=62; bs=41; tlh= 88; blh=60; gap=48; }
-  else if (visLen < 420) { ts=54; bs=37; tlh= 76; blh=54; gap=42; }
-  else if (visLen < 620) { ts=46; bs=33; tlh= 66; blh=48; gap=36; }
-  else if (visLen < 900) { ts=40; bs=29; tlh= 58; blh=42; gap=30; }
-  else                   { ts=34; bs=26; tlh= 50; blh=38; gap=26; }
+  if      (visLen < 80)  { ts=96; bs=62; tlh=134; blh=90; gap=76; }
+  else if (visLen < 150) { ts=86; bs=55; tlh=120; blh=82; gap=68; }
+  else if (visLen < 260) { ts=74; bs=49; tlh=104; blh=72; gap=58; }
+  else if (visLen < 420) { ts=65; bs=44; tlh= 92; blh=64; gap=50; }
+  else if (visLen < 620) { ts=55; bs=40; tlh= 80; blh=58; gap=44; }
+  else if (visLen < 900) { ts=48; bs=35; tlh= 70; blh=50; gap=36; }
+  else                   { ts=41; bs=31; tlh= 60; blh=44; gap=32; }
 
-  // CPL in visual units (wide = 2)
-  const tCPL = Math.floor(CW / (ts * 0.58));
-  const bCPL = Math.floor(CW / (bs * 0.58));
+  // CPL in visual units.
+  // Factor 0.50 = accurate for CJK (each CJK char = 1em wide, counted as 2 visual units → 0.5px per VU).
+  // For Latin at ~0.52em avg glyph: factor 0.50 fills lines to the margin without overflowing.
+  // This ensures text reaches the right margin edge rather than wrapping too early.
+  const tCPL = Math.floor(CW / (ts * 0.50));
+  const bCPL = Math.floor(CW / (bs * 0.50));
 
   // Wrap title
   const titleLines = smartWrap(rawTitle, tCPL);
