@@ -262,6 +262,63 @@ select option { background:#1f2937; }
 .model-wrap select { background:transparent; border:none; color:var(--mu2); font-size:13px; cursor:pointer; padding:0; width:auto; font-family:inherit; }
 .model-wrap i { color:var(--mu2); font-size:12px; }
 #capture-zone { position:fixed; top:0; left:0; width:1080px; height:1920px; z-index:-100; opacity:0; pointer-events:none; overflow:hidden; }
+
+/* ══ TEMPLATES SCREEN ══ */
+#screen-templates {
+  min-height:100vh; flex-direction:column; background:#050508; overflow-y:auto; position:relative;
+}
+#screen-templates::after {
+  content:''; position:fixed; width:700px; height:700px; border-radius:50%;
+  background:radial-gradient(circle, rgba(99,102,241,.06) 0%, transparent 70%);
+  top:30%; left:50%; transform:translate(-50%,-50%); pointer-events:none; z-index:0;
+}
+.t-nav {
+  position:relative; z-index:10; display:flex; align-items:center;
+  justify-content:space-between; padding:22px 24px 16px; max-width:480px; margin:0 auto; width:100%;
+}
+.t-logo { font-size:19px; font-weight:900; letter-spacing:-.5px; color:rgba(255,255,255,.95); }
+.t-body { position:relative; z-index:10; padding:8px 24px 48px; max-width:480px; margin:0 auto; width:100%; }
+.t-greeting { font-size:26px; font-weight:800; letter-spacing:-.5px; color:#fff; margin-bottom:4px; line-height:1.25; }
+.t-hint { font-size:13px; color:rgba(255,255,255,.28); margin-bottom:32px; }
+
+/* The one active template card */
+.t-card {
+  width:100%; border-radius:20px; overflow:hidden;
+  background:linear-gradient(150deg,#100e1f 0%,#0c0c18 100%);
+  border:1px solid rgba(99,102,241,.2); cursor:pointer; position:relative;
+  transition:transform .3s cubic-bezier(.16,1,.3,1), box-shadow .3s, border-color .3s;
+  box-shadow:0 20px 60px rgba(0,0,0,.5);
+  animation:fadeUp .5s cubic-bezier(.16,1,.3,1) .1s both;
+}
+.t-card:hover { transform:translateY(-3px); border-color:rgba(139,92,246,.4); box-shadow:0 0 48px rgba(99,102,241,.1), 0 28px 60px rgba(0,0,0,.6); }
+.t-card:active { transform:scale(.985); }
+.t-card-topline { height:1px; background:linear-gradient(90deg,transparent,rgba(139,92,246,.5),transparent); }
+.t-card-body { padding:28px 24px 20px; display:flex; align-items:flex-start; gap:18px; }
+.t-card-icon {
+  width:52px; height:52px; flex-shrink:0; border-radius:14px; font-size:24px;
+  background:linear-gradient(135deg,rgba(99,102,241,.18),rgba(139,92,246,.12));
+  border:1px solid rgba(139,92,246,.2); display:flex; align-items:center; justify-content:center;
+}
+.t-card-info { flex:1; }
+.t-card-eyebrow { font-size:10px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:rgba(139,92,246,.7); margin-bottom:5px; }
+.t-card-name { font-size:20px; font-weight:800; letter-spacing:-.3px; color:#fff; margin-bottom:5px; }
+.t-card-desc { font-size:12.5px; color:rgba(255,255,255,.32); line-height:1.6; }
+.t-card-footer {
+  padding:14px 24px 18px; border-top:1px solid rgba(255,255,255,.05);
+  display:flex; align-items:center; justify-content:space-between;
+}
+.t-card-tags { display:flex; gap:8px; }
+.t-tag {
+  font-size:10px; font-weight:600; color:rgba(255,255,255,.25); letter-spacing:.04em;
+  background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.07);
+  border-radius:20px; padding:3px 10px;
+}
+.t-card-go {
+  width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+  background:rgba(99,102,241,.12); border:1px solid rgba(99,102,241,.2);
+  color:rgba(139,92,246,.8); font-size:13px; transition:all .25s;
+}
+.t-card:hover .t-card-go { background:rgba(99,102,241,.25); border-color:rgba(139,92,246,.4); transform:translateX(3px); }
 </style>
 </head>
 <body>
@@ -321,50 +378,42 @@ select option { background:#1f2937; }
 
 <!-- ══ TEMPLATES SCREEN ══ -->
 <div id="screen-templates" class="screen">
-  <div class="tmpl-header">
-    <div class="tmpl-brand">LUMA</div>
-    <div class="user-chip" onclick="toggleSignOut()">
+
+  <!-- Topbar -->
+  <div class="t-nav">
+    <div class="t-logo">LUMA</div>
+    <div class="user-chip" onclick="toggleSignOut()" style="padding:4px 10px 4px 4px">
       <img id="user-avatar-tmpl" class="user-avatar" src="" alt="">
       <span id="user-name-tmpl" class="user-name"></span>
-      <i class="fas fa-chevron-down" style="font-size:10px;color:var(--mu2)"></i>
+      <i class="fas fa-chevron-down" style="font-size:9px;color:var(--mu2)"></i>
     </div>
   </div>
-  <div class="tmpl-body">
-    <div class="tmpl-greeting" id="tmpl-greeting">Good day 👋</div>
-    <div class="tmpl-sub">Choose a template to get started</div>
-    <div class="tmpl-grid">
 
-      <!-- Template 1: Image Generator -->
-      <div class="tmpl-card" onclick="openTemplate('imggen')" style="animation-delay:0ms">
-        <div class="tmpl-badge">ACTIVE</div>
-        <div class="tmpl-icon" style="background:linear-gradient(135deg,#6366f1,#8b5cf6)">🎨</div>
-        <div class="tmpl-name">Image Generator</div>
-        <div class="tmpl-desc">Turn any text into shareable 9:16 images</div>
+  <div class="t-body">
+    <div class="t-greeting" id="tmpl-greeting">Good morning 👋</div>
+    <div class="t-hint">Pick a template below</div>
+
+    <!-- Image Generator — the only active template -->
+    <div class="t-card" onclick="openTemplate('imggen')">
+      <div class="t-card-topline"></div>
+      <div class="t-card-body">
+        <div class="t-card-icon">🎨</div>
+        <div class="t-card-info">
+          <div class="t-card-eyebrow">Template · Active</div>
+          <div class="t-card-name">Image Generator</div>
+          <div class="t-card-desc">Paste any text. AI structures it. Get ready-to-share 9:16 images instantly.</div>
+        </div>
       </div>
-
-      <!-- Future templates (coming soon) -->
-      <div class="tmpl-card tmpl-coming" style="animation-delay:60ms">
-        <div class="tmpl-badge" style="background:rgba(107,114,128,.15);border-color:rgba(107,114,128,.2);color:var(--mu)">SOON</div>
-        <div class="tmpl-icon" style="background:linear-gradient(135deg,#0f172a,#1e293b)">📊</div>
-        <div class="tmpl-name">Data Cards</div>
-        <div class="tmpl-desc">Stats and metrics as visual cards</div>
+      <div class="t-card-footer">
+        <div class="t-card-tags">
+          <span class="t-tag">9:16 format</span>
+          <span class="t-tag">Batch export</span>
+          <span class="t-tag">AI powered</span>
+        </div>
+        <div class="t-card-go"><i class="fas fa-arrow-right"></i></div>
       </div>
-
-      <div class="tmpl-card tmpl-coming" style="animation-delay:120ms">
-        <div class="tmpl-badge" style="background:rgba(107,114,128,.15);border-color:rgba(107,114,128,.2);color:var(--mu)">SOON</div>
-        <div class="tmpl-icon" style="background:linear-gradient(135deg,#0f172a,#1e293b)">💬</div>
-        <div class="tmpl-name">Quote Maker</div>
-        <div class="tmpl-desc">Beautiful quote cards for social</div>
-      </div>
-
-      <div class="tmpl-card tmpl-coming" style="animation-delay:180ms">
-        <div class="tmpl-badge" style="background:rgba(107,114,128,.15);border-color:rgba(107,114,128,.2);color:var(--mu)">SOON</div>
-        <div class="tmpl-icon" style="background:linear-gradient(135deg,#0f172a,#1e293b)">🗓️</div>
-        <div class="tmpl-name">Event Post</div>
-        <div class="tmpl-desc">Announcements &amp; event promos</div>
-      </div>
-
     </div>
+
   </div>
 </div>
 
