@@ -1,511 +1,1303 @@
-// ═══════════════════════════════════════════════════════════
-// LUMA — Cloudflare Pages Functions
-// Bindings required:
-//   AI              → Workers AI
-//   KV              → KV Namespace
-//   GOOGLE_CLIENT_ID → Secret (Environment Variable)
-// ═══════════════════════════════════════════════════════════
-
-const TTL = 60 * 60 * 24 * 3; // 3 days
-
-export async function onRequest(context) {
-  const { request, env } = context;
-  const url    = new URL(request.url);
-  const path   = url.pathname;
-  const method = request.method;
-  const H      = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
-
-  if (method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: {
-      ...H, 'Access-Control-Allow-Methods': 'GET,POST,DELETE',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    }});
-  }
-
-  // ═══════════════════════════════════════════════════════
-  // POST /api  →  AI parses text → job → SVGs in background
-  // ═══════════════════════════════════════════════════════
-  if (path === '/api' && method === 'POST') {
-    if (!env.AI) return json({ error: 'AI binding missing — name it: AI' }, 500, H);
-    if (!env.KV) return json({ error: 'KV binding missing — name it: KV' }, 500, H);
-
-    let body;
-    try { body = await request.json(); }
-    catch { return json({ error: 'Invalid JSON body' }, 400, H); }
-
-    const text     = (body.text     || '').trim();
-    const model    = body.model     || '@cf/meta/llama-3.1-8b-instruct-fast';
-    const deviceId = (body.deviceId || '').trim();
-    const template = body.template  || 'imggen';
-
-    if (!text)     return json({ error: 'No text provided' }, 400, H);
-    if (!deviceId) return json({ error: 'Not signed in' }, 401, H);
-
-    // ── AI prompt ──
-    const prompt = `Return ONLY valid JSON. No explanation. No markdown. No code fences.
-
-Task: Split the input into separate posts and structure as JSON.
-
-CRITICAL RULES — follow exactly:
-1. REMOVE any post/section numbering from titles. Examples to strip:
-   - "1. Aries" → title becomes "Aries"
-   - "Post 1: Cancer" → title becomes "Cancer"
-   - "第一：白羊座" → title becomes "白羊座"
-   - "1)" / "1:" / "(1)" prefix → strip it entirely
-   The number is a reference marker, NOT part of the title.
-
-2. Copy every word, emoji, symbol, punctuation from the input EXACTLY — no changes, no additions.
-
-3. Wrap IMPORTANT words in **double asterisks** for bold:
-   - Zodiac sign names (Aries, Taurus, Gemini, Cancer, Leo, Virgo, Libra, Scorpio, Sagittarius, Capricorn, Aquarius, Pisces and Chinese equivalents like 白羊座, 金牛座 etc.)
-   - Planet names (Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune)
-   - Key power words: strength, love, success, wealth, abundance, growth, clarity
-   - Numbers/dates that are significant
-   Do NOT bold every word — only genuinely important keywords.
-
-4. Keep all emojis exactly as they appear.
-
-Output format (no other text):
-{"posts":[{"title":"actual title without numbering","content":["line with **bold** words","next line",""]}]}
-
-Rules:
-- title = first meaningful line of each post, with numbering stripped
-- content = all remaining lines, one string per element, empty lines become ""
-- Posts are separated by blank lines or new numbered sections
-
-INPUT:
-${text}
-
-JSON:`;
-
-    let aiRaw = '';
-    try {
-      const r = await env.AI.run(model, { prompt, max_tokens: 4096, temperature: 0.1 });
-      if      (typeof r === 'string') aiRaw = r;
-      else if (r?.response)           aiRaw = r.response;
-      else if (r?.result?.response)   aiRaw = r.result.response;
-      else return json({ error: 'Unexpected AI response shape' }, 500, H);
-    } catch(e) {
-      return json({ error: `AI error: ${e.message}` }, 500, H);
-    }
-
-    aiRaw = aiRaw.replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/i,'').trim();
-    const si = aiRaw.indexOf('{'), ei = aiRaw.lastIndexOf('}');
-    if (si === -1) return json({ error: `No JSON in AI response. Got: "${aiRaw.slice(0,200)}"` }, 500, H);
-
-    let posts;
-    try {
-      const p = JSON.parse(repairJSON(aiRaw.slice(si, ei + 1)));
-      posts = Array.isArray(p) ? p : (p.posts || []);
-    } catch {
-      posts = extractFallback(aiRaw);
-    }
-    if (!posts.length) return json({ error: 'No posts parsed. Try again.' }, 500, H);
-
-    // ── Post-process every post ──
-    // 1. Strip any remaining post numbers the AI missed
-    // 2. Auto-bold zodiac signs missed by the AI
-    posts = posts.map(p => ({
-      title:   ensureZodiacBold(stripPostNumber(p.title || '')),
-      content: (p.content || []).map(line =>
-        line ? ensureZodiacBold(line) : line
-      ),
-    }));
-
-    // ── Create job record in KV ──
-    const ts    = Date.now();
-    const jobId = `job:${deviceId}:${template}:${ts}`;
-    const cleanLabel = cleanText(posts[0]?.title || 'Session').slice(0, 80);
-
-    await env.KV.put(jobId, JSON.stringify({
-      status: 'processing', total: posts.length, done: 0,
-      label:  cleanLabel,
-      timestamp: ts, template, deviceId, results: [],
-    }), { expirationTtl: TTL });
-
-    // ── Respond immediately; render SVGs in background ──
-    const response = json({ jobId, total: posts.length }, 200, H);
-
-    context.waitUntil((async () => {
-      const results = [];
-      for (let i = 0; i < posts.length; i++) {
-        try {
-          const post = posts[i];
-          const cleanTitle = cleanText(post.title);
-          results.push({
-            title:   cleanTitle,   // plain text title, always stored
-            content: post.content,
-            svg:     generateSVG(post),
-          });
-          const cur = await env.KV.get(jobId, { type: 'json' });
-          if (!cur) break; // deleted mid-process
-          await env.KV.put(jobId, JSON.stringify({
-            ...cur,
-            done:    i + 1,
-            total:   posts.length,  // always keep total correct
-            results,
-            status:  i === posts.length - 1 ? 'done' : 'processing',
-          }), { expirationTtl: TTL });
-        } catch(err) {
-          console.error(`SVG gen error post ${i}:`, err.message);
-        }
-      }
-    })());
-
-    return response;
-  }
-
-  // ═══════════════════════════════════════════════════════
-  // GET /api/job?jobId=x
-  // ═══════════════════════════════════════════════════════
-  if (path === '/api/job' && method === 'GET') {
-    if (!env.KV) return json({ error: 'KV binding missing' }, 500, H);
-    const jobId = url.searchParams.get('jobId');
-    if (!jobId) return json({ error: 'No jobId' }, 400, H);
-    try {
-      const job = await env.KV.get(jobId, { type: 'json' });
-      if (!job) return json({ status: 'expired', results: [], done: 0, total: 0 }, 200, H);
-      return json(job, 200, H);
-    } catch(e) {
-      return json({ error: e.message }, 500, H);
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════
-  // /history
-  // ═══════════════════════════════════════════════════════
-  if (path === '/history') {
-    if (!env.KV) return json({ error: 'KV binding missing' }, 500, H);
-
-    if (method === 'GET') {
-      const deviceId = url.searchParams.get('deviceId');
-      const template = url.searchParams.get('template') || 'imggen';
-      if (!deviceId) return json({ error: 'No deviceId' }, 400, H);
-      try {
-        const list     = await env.KV.list({ prefix: `job:${deviceId}:${template}:` });
-        const sessions = [];
-        for (const key of list.keys) {
-          try {
-            const d = await env.KV.get(key.name, { type: 'json' });
-            if (d) sessions.push({
-              jobId:     key.name,
-              label:     d.label || 'Session',
-              total:     d.total || 0,
-              done:      d.done  || 0,
-              status:    d.status,
-              timestamp: d.timestamp,
-            });
-          } catch {}
-        }
-        sessions.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-        return json({ sessions }, 200, H);
-      } catch(e) {
-        return json({ error: `KV error: ${e.message}` }, 500, H);
-      }
-    }
-
-    if (method === 'DELETE') {
-      let body;
-      try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, H); }
-      const { jobId } = body;
-      if (!jobId) return json({ error: 'No jobId' }, 400, H);
-      await env.KV.delete(jobId).catch(() => {});
-      return json({ success: true }, 200, H);
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════
-  // GET /config
-  // ═══════════════════════════════════════════════════════
-  if (path === '/config' && method === 'GET') {
-    return json({ googleClientId: env.GOOGLE_CLIENT_ID || '' }, 200, H);
-  }
-
-  return context.next();
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>LUMA</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#050508;--s1:#0c0b14;--s2:#13111f;
+  --bd:rgba(255,255,255,.07);--bdh:rgba(255,255,255,.18);
+  --tx:#fff;--mu:rgba(255,255,255,.35);--mu2:rgba(255,255,255,.15);
+  --ind:#6366f1;--pur:#8b5cf6;--gn:#22c55e;--rd:#ef4444;--yw:#f59e0b;
 }
 
-// ── JSON helper ─────────────────────────────────────────
-function json(data, status, headers) {
-  return new Response(JSON.stringify(data), {
-    status, headers: { 'Content-Type': 'application/json', ...headers },
+/* ── Base: prevent ALL body/html scroll — Android critical ── */
+html,body{
+  height:100%;overflow:hidden;
+  overscroll-behavior:none;
+  background:var(--bg);color:var(--tx);
+  font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  -webkit-tap-highlight-color:transparent;
+}
+::-webkit-scrollbar{width:3px;height:3px}
+::-webkit-scrollbar-thumb{background:#1e1b2e;border-radius:3px}
+
+/* ── Animations ── */
+@keyframes spin   {to{transform:rotate(360deg)}}
+@keyframes fadeUp {from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes slideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}
+@keyframes dot    {0%,80%,100%{transform:scale(0);opacity:.3}40%{transform:scale(1);opacity:1}}
+@keyframes orbF1  {0%,100%{transform:translate(0,0)}50%{transform:translate(-30px,20px)}}
+@keyframes orbF2  {0%,100%{transform:translate(0,0)}50%{transform:translate(20px,-30px)}}
+@keyframes shimmer{0%{background-position:200% center}100%{background-position:-200% center}}
+@keyframes pulse  {0%,100%{box-shadow:0 0 0 0 rgba(139,92,246,.5)}50%{box-shadow:0 0 0 14px rgba(139,92,246,0)}}
+.spin{animation:spin 1s linear infinite}
+
+/* ── All screens: fixed, fill viewport ── */
+.screen{display:none;position:fixed;inset:0;padding-bottom:env(safe-area-inset-bottom)}
+.screen.active{display:flex}
+
+/* ═══ LOGIN ═══ */
+#screen-login{
+  flex-direction:column;align-items:center;justify-content:center;
+  padding:24px;background:#000;overflow-y:auto;-webkit-overflow-scrolling:touch;
+}
+#screen-login::before{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  background-image:linear-gradient(rgba(99,102,241,.03) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(99,102,241,.03) 1px,transparent 1px);
+  background-size:44px 44px;
+}
+.orb{position:absolute;border-radius:50%;filter:blur(70px);pointer-events:none}
+.orb-1{width:480px;height:480px;background:radial-gradient(circle,rgba(99,102,241,.12),transparent 70%);top:-100px;right:-100px;animation:orbF1 14s ease-in-out infinite}
+.orb-2{width:380px;height:380px;background:radial-gradient(circle,rgba(139,92,246,.1),transparent 70%);bottom:-80px;left:-80px;animation:orbF2 17s ease-in-out infinite}
+.login-card{
+  position:relative;z-index:10;background:rgba(12,11,20,.88);backdrop-filter:blur(28px);
+  border:1px solid rgba(255,255,255,.09);border-radius:28px;padding:44px 36px;
+  width:100%;max-width:390px;text-align:center;
+  animation:fadeUp .5s cubic-bezier(.16,1,.3,1) both;
+  box-shadow:0 32px 80px rgba(0,0,0,.7),0 0 0 1px rgba(255,255,255,.04) inset;
+}
+.logo-mark{
+  width:68px;height:68px;border-radius:20px;margin:0 auto 18px;
+  background:linear-gradient(135deg,#6366f1,#8b5cf6,#a78bfa);
+  display:flex;align-items:center;justify-content:center;
+  font-size:32px;font-weight:900;color:#fff;
+  animation:pulse 3s ease-in-out infinite;box-shadow:0 8px 32px rgba(99,102,241,.4);
+}
+.login-brand{
+  font-size:34px;font-weight:900;letter-spacing:-1.5px;margin-bottom:5px;
+  background:linear-gradient(135deg,#fff 0%,#c4b5fd 50%,#818cf8 100%);
+  background-size:200%;-webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text;animation:shimmer 4s linear infinite;
+}
+.login-tag{font-size:13px;color:var(--mu);margin-bottom:32px}
+.feat-pills{display:flex;gap:7px;justify-content:center;flex-wrap:wrap;margin-bottom:32px}
+.pill{display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:50px;padding:5px 11px;font-size:11px;font-weight:600;color:rgba(255,255,255,.4)}
+.pill i{font-size:10px}
+.login-divider{display:flex;align-items:center;gap:12px;margin-bottom:18px;color:rgba(255,255,255,.15);font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase}
+.login-divider::before,.login-divider::after{content:'';flex:1;height:1px;background:rgba(255,255,255,.06)}
+#google-btn-wrap{width:100%;display:flex;justify-content:center;min-height:48px;align-items:center}
+#google-btn-wrap>div{width:100%!important}
+#google-btn-wrap iframe{width:100%!important;border-radius:14px!important}
+.setup-notice{background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:12px;color:#fcd34d;line-height:1.8}
+.setup-notice code{background:rgba(255,255,255,.08);padding:2px 5px;border-radius:3px;font-size:11px}
+.login-note{font-size:11px;color:rgba(255,255,255,.18);margin-top:18px;line-height:1.8}
+
+/* ═══ TEMPLATES ═══ */
+#screen-templates{flex-direction:column;background:#050508;overflow-y:auto;-webkit-overflow-scrolling:touch}
+#screen-templates::after{content:'';position:fixed;width:600px;height:600px;border-radius:50%;background:radial-gradient(circle,rgba(99,102,241,.055),transparent 70%);top:35%;left:50%;transform:translate(-50%,-50%);pointer-events:none;z-index:0}
+.t-nav{position:relative;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:22px 22px 14px;max-width:480px;margin:0 auto;width:100%}
+.t-logo{font-size:18px;font-weight:900;letter-spacing:-.5px;color:rgba(255,255,255,.9)}
+.t-body{position:relative;z-index:10;padding:6px 22px 48px;max-width:480px;margin:0 auto;width:100%}
+.t-greeting{font-size:26px;font-weight:800;letter-spacing:-.5px;color:#fff;margin-bottom:4px}
+.t-hint{font-size:13px;color:var(--mu);margin-bottom:28px}
+.t-card{width:100%;border-radius:20px;overflow:hidden;background:linear-gradient(150deg,#0f0d1e,#0b0a17);border:1px solid rgba(99,102,241,.18);cursor:pointer;position:relative;transition:transform .28s cubic-bezier(.16,1,.3,1),box-shadow .28s,border-color .28s;box-shadow:0 20px 56px rgba(0,0,0,.5);animation:fadeUp .5s cubic-bezier(.16,1,.3,1) .08s both}
+.t-card:hover{transform:translateY(-3px);border-color:rgba(139,92,246,.38)}
+.t-card:active{transform:scale(.985)}
+.t-card-glow{height:1px;background:linear-gradient(90deg,transparent,rgba(139,92,246,.55),rgba(99,102,241,.4),transparent)}
+.t-card-body{padding:26px 22px 18px;display:flex;align-items:flex-start;gap:16px}
+.t-card-icon{width:50px;height:50px;flex-shrink:0;border-radius:14px;font-size:22px;background:linear-gradient(135deg,rgba(99,102,241,.16),rgba(139,92,246,.1));border:1px solid rgba(139,92,246,.18);display:flex;align-items:center;justify-content:center}
+.t-card-eyebrow{font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:rgba(139,92,246,.7);margin-bottom:4px}
+.t-card-name{font-size:19px;font-weight:800;letter-spacing:-.3px;color:#fff;margin-bottom:4px}
+.t-card-desc{font-size:12.5px;color:rgba(255,255,255,.3);line-height:1.6}
+.t-card-footer{padding:12px 22px 18px;border-top:1px solid rgba(255,255,255,.04);display:flex;align-items:center;justify-content:space-between}
+.t-tags{display:flex;gap:7px;flex-wrap:wrap}
+.t-tag{font-size:10px;font-weight:600;color:rgba(255,255,255,.22);background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:20px;padding:3px 9px}
+.t-card-go{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(99,102,241,.1);border:1px solid rgba(99,102,241,.18);color:rgba(139,92,246,.8);font-size:12px;transition:all .22s;flex-shrink:0}
+.t-card:hover .t-card-go{background:rgba(99,102,241,.22);transform:translateX(3px)}
+
+/* ═══ SHARED: user chip + signout ═══ */
+.user-chip{display:flex;align-items:center;gap:7px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:50px;padding:4px 10px 4px 4px;cursor:pointer;transition:all .2s}
+.user-chip:hover{border-color:rgba(255,255,255,.15)}
+.user-avatar{width:24px;height:24px;border-radius:50%;object-fit:cover}
+.user-name{font-size:12px;font-weight:600;color:var(--mu);max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.signout-menu{position:fixed;top:64px;right:16px;z-index:500;background:#0d0c1a;border:1px solid rgba(255,255,255,.09);border-radius:14px;padding:8px;min-width:190px;display:none;box-shadow:0 12px 40px rgba(0,0,0,.7);animation:fadeUp .18s ease both}
+.signout-menu.open{display:block}
+.signout-user{padding:10px 12px 12px;border-bottom:1px solid rgba(255,255,255,.06);margin-bottom:6px}
+.signout-email{font-size:11px;color:var(--mu);margin-top:2px}
+.signout-btn{display:flex;align-items:center;gap:8px;width:100%;background:none;border:none;color:rgba(252,165,165,.8);padding:9px 12px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:background .15s}
+.signout-btn:hover{background:rgba(239,68,68,.08)}
+
+/* ═══ CHAT SCREEN — fixed layout ═══ */
+#screen-chat{flex-direction:column;overflow:hidden;background:var(--bg)}
+
+.ch-nav{
+  flex-shrink:0;display:flex;align-items:center;gap:10px;
+  padding:12px 14px;padding-top:calc(12px + env(safe-area-inset-top));
+  border-bottom:1px solid rgba(255,255,255,.05);
+  background:rgba(5,5,8,.97);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);z-index:20;
+}
+.ch-nav-back{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.07);color:var(--mu);font-size:13px;cursor:pointer;flex-shrink:0;transition:all .2s}
+.ch-nav-back:hover{background:rgba(255,255,255,.09);color:#fff}
+.ch-nav-center{flex:1;display:flex;align-items:center;gap:10px;min-width:0;overflow:hidden}
+.ch-nav-icon{width:32px;height:32px;border-radius:10px;flex-shrink:0;background:linear-gradient(135deg,rgba(99,102,241,.2),rgba(139,92,246,.15));border:1px solid rgba(139,92,246,.2);display:flex;align-items:center;justify-content:center;font-size:15px}
+.ch-nav-title{font-size:15px;font-weight:700;letter-spacing:-.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ch-nav-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.ch-hist-btn{display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:7px 11px;color:var(--mu);font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .2s;white-space:nowrap}
+.ch-hist-btn:hover{background:rgba(255,255,255,.09);color:#fff}
+.ch-hist-btn i{font-size:11px}
+.ch-model-sel{background:transparent;border:none;color:var(--mu);font-size:11px;cursor:pointer;font-family:inherit;outline:none;max-width:90px}
+.ch-model-sel option{background:#1a1828}
+
+/* messages — ONLY scrollable area */
+.ch-messages{
+  flex:1;overflow-y:auto;overflow-x:hidden;
+  -webkit-overflow-scrolling:touch;overscroll-behavior:contain;
+  padding:16px 14px 8px;display:flex;flex-direction:column;gap:10px;
+}
+
+.ch-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--mu);text-align:center;padding:40px 20px;min-height:200px}
+.ch-empty-icon{width:64px;height:64px;border-radius:20px;background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(139,92,246,.08));border:1px solid rgba(99,102,241,.15);display:flex;align-items:center;justify-content:center;font-size:28px}
+.ch-empty-title{font-size:16px;font-weight:700;color:rgba(255,255,255,.5)}
+.ch-empty-sub{font-size:13px;color:var(--mu);line-height:1.6;max-width:240px}
+
+.ch-user-msg{align-self:flex-end;max-width:82%;background:linear-gradient(135deg,rgba(99,102,241,.16),rgba(139,92,246,.12));border:1px solid rgba(99,102,241,.22);border-radius:16px 16px 4px 16px;padding:11px 15px;font-size:14px;color:rgba(255,255,255,.88);line-height:1.6;white-space:pre-wrap;word-break:break-word;animation:fadeUp .25s ease both}
+.ch-thinking{align-self:flex-start;display:inline-flex;align-items:center;gap:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:16px 16px 16px 4px;padding:11px 15px;font-size:13px;color:var(--mu);animation:fadeUp .25s ease both}
+.ch-dots{display:flex;gap:4px;align-items:center}
+.ch-dots span{width:6px;height:6px;border-radius:50%;background:rgba(139,92,246,.6);animation:dot 1.4s ease-in-out infinite}
+.ch-dots span:nth-child(2){animation-delay:.2s}
+.ch-dots span:nth-child(3){animation-delay:.4s}
+
+.ch-bot-group{align-self:flex-start;width:100%;display:flex;flex-direction:column;gap:8px}
+
+/* group header with Download All */
+.ch-group-hd{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);
+  border-radius:10px;padding:8px 12px;font-size:12px;color:var(--mu);flex-wrap:wrap;gap:6px;
+}
+.ch-group-hd-left{display:flex;align-items:center;gap:8px;flex-shrink:0}
+
+/* Download All button */
+.ch-dl-all-btn{
+  display:flex;align-items:center;justify-content:center;gap:7px;
+  background:linear-gradient(135deg,rgba(99,102,241,.22),rgba(139,92,246,.16));
+  border:1px solid rgba(139,92,246,.32);border-radius:8px;
+  padding:7px 14px;font-size:12px;font-weight:700;
+  color:rgba(167,139,250,.95);cursor:pointer;font-family:inherit;
+  transition:all .2s;white-space:nowrap;
+}
+.ch-dl-all-btn:hover{background:linear-gradient(135deg,rgba(99,102,241,.35),rgba(139,92,246,.28));border-color:rgba(139,92,246,.5);color:#c4b5fd}
+.ch-dl-all-btn:active{transform:scale(.96)}
+.ch-dl-all-btn:disabled{opacity:.5;cursor:wait;transform:none}
+.ch-dl-all-btn i{font-size:11px}
+
+/* image row */
+.ch-img-row{
+  display:flex;flex-wrap:nowrap;gap:10px;
+  overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;
+  padding-bottom:6px;width:100%;
+  scroll-snap-type:x mandatory;
+}
+.ch-img-row::-webkit-scrollbar{height:3px}
+.ch-img-row::-webkit-scrollbar-thumb{background:#1e1b2e;border-radius:3px}
+
+/* ── Image card ── */
+.ch-img-card{
+  flex-shrink:0;width:160px;border-radius:14px;overflow:hidden;
+  background:rgba(255,255,255,.04);border:2px solid rgba(255,255,255,.08);
+  animation:fadeUp .3s ease both;transition:border-color .25s,box-shadow .25s;
+  scroll-snap-align:start;position:relative;
+}
+.ch-img-card:hover{border-color:rgba(255,255,255,.16)}
+
+/* Interaction state outlines — colored border + glow when acted upon */
+.ch-img-card.was-shared {
+  border-color:rgba(34,197,94,.65)!important;
+  box-shadow:0 0 14px rgba(34,197,94,.18);
+}
+.ch-img-card.was-saved {
+  border-color:rgba(96,165,250,.65)!important;
+  box-shadow:0 0 14px rgba(96,165,250,.18);
+}
+.ch-img-card.was-copied {
+  border-color:rgba(167,139,250,.65)!important;
+  box-shadow:0 0 14px rgba(167,139,250,.18);
+}
+/* Priority: shared > saved > copied when multiple */
+.ch-img-card.was-shared.was-saved {
+  border-color:rgba(34,197,94,.65)!important;
+  box-shadow:0 0 14px rgba(34,197,94,.18);
+}
+
+/* Interaction badge — small icon strip at top-right of image */
+.ch-img-badges{
+  position:absolute;top:6px;right:6px;
+  display:flex;flex-direction:column;gap:3px;align-items:flex-end;
+  z-index:5;pointer-events:none;
+}
+.ch-badge{
+  width:20px;height:20px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:8px;backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,.15);
+}
+.ch-badge.shared{background:rgba(34,197,94,.8);color:#fff}
+.ch-badge.saved {background:rgba(96,165,250,.8);color:#fff}
+.ch-badge.copied{background:rgba(167,139,250,.8);color:#fff}
+
+.ch-img-wrap{width:100%;aspect-ratio:9/16;overflow:hidden;background:#000;cursor:pointer;position:relative}
+.ch-img-wrap img{width:100%;height:100%;object-fit:cover;display:block;transition:opacity .3s}
+.ch-img-wrap.loading img{opacity:0}
+
+/* ── Buttons: Share (big, full-width) + Save/Copy row ── */
+.ch-img-actions{padding:8px;display:flex;flex-direction:column;gap:5px}
+
+.ch-img-btn-share{
+  width:100%;display:flex;align-items:center;justify-content:center;gap:7px;
+  background:linear-gradient(135deg,rgba(34,197,94,.16),rgba(34,197,94,.09));
+  border:1px solid rgba(34,197,94,.28);border-radius:9px;
+  padding:10px 8px;font-size:12px;font-weight:700;
+  color:rgba(134,239,172,.95);cursor:pointer;font-family:inherit;transition:all .18s;
+}
+.ch-img-btn-share:hover{background:linear-gradient(135deg,rgba(34,197,94,.26),rgba(34,197,94,.18));border-color:rgba(34,197,94,.45)}
+.ch-img-btn-share:active{transform:scale(.96)}
+.ch-img-btn-share.saving{opacity:.5;cursor:wait}
+.ch-img-btn-share i{font-size:12px}
+
+.ch-img-btns-row{display:flex;gap:5px}
+.ch-img-btn{
+  flex:1;display:flex;align-items:center;justify-content:center;gap:4px;
+  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.07);
+  border-radius:7px;padding:7px 4px;font-size:10px;font-weight:600;
+  color:var(--mu);cursor:pointer;font-family:inherit;transition:all .18s;
+}
+.ch-img-btn:hover{background:rgba(255,255,255,.1);color:#fff;border-color:rgba(255,255,255,.15)}
+.ch-img-btn:active{transform:scale(.94)}
+.ch-img-btn i{font-size:10px}
+.ch-img-btn.saving{opacity:.5;cursor:wait}
+
+.ch-session-label{align-self:center;font-size:11px;font-weight:600;color:var(--mu2);background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:20px;padding:4px 12px;letter-spacing:.04em}
+.ch-error{align-self:flex-start;max-width:85%;background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.18);border-radius:12px;padding:10px 14px;font-size:13px;color:#fca5a5;line-height:1.6;animation:fadeUp .25s ease both}
+
+/* input bar */
+.ch-input-bar{
+  flex-shrink:0;padding:10px 12px;
+  padding-bottom:calc(10px + env(safe-area-inset-bottom));
+  border-top:1px solid rgba(255,255,255,.05);
+  background:rgba(5,5,8,.97);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  display:flex;align-items:flex-end;gap:9px;z-index:20;
+}
+.ch-textarea{
+  flex:1;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);
+  border-radius:16px;padding:11px 14px;color:#fff;font-size:16px;
+  font-family:inherit;resize:none;outline:none;
+  min-height:46px;max-height:140px;line-height:1.55;
+  transition:border-color .2s;-webkit-overflow-scrolling:touch;
+}
+.ch-textarea:focus{border-color:rgba(99,102,241,.38)}
+.ch-textarea::placeholder{color:rgba(255,255,255,.22)}
+.ch-send{
+  width:46px;height:46px;flex-shrink:0;border-radius:50%;
+  background:linear-gradient(135deg,#6366f1,#8b5cf6);border:none;
+  color:#fff;font-size:16px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:all .2s;box-shadow:0 4px 16px rgba(99,102,241,.32);
+}
+.ch-send:hover:not(:disabled){transform:scale(1.07)}
+.ch-send:active:not(:disabled){transform:scale(.94)}
+.ch-send:disabled{opacity:.38;cursor:not-allowed;transform:none}
+
+/* ═══ HISTORY DRAWER ═══ */
+.hist-panel{position:fixed;inset:0;z-index:400;display:none}
+.hist-panel.open{display:flex}
+.hist-back{position:absolute;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(4px)}
+.hist-drawer{position:absolute;right:0;top:0;bottom:0;width:min(340px,100vw);background:#09081a;border-left:1px solid rgba(255,255,255,.07);display:flex;flex-direction:column;animation:slideIn .28s cubic-bezier(.16,1,.3,1) both}
+.hist-head{padding:16px 18px;padding-top:calc(16px + env(safe-area-inset-top));border-bottom:1px solid rgba(255,255,255,.05);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.hist-head-txt{font-size:15px;font-weight:800}
+.hist-sub{font-size:11px;color:var(--mu);margin-top:2px}
+.hist-close{width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,.05);border:none;color:var(--mu);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .18s}
+.hist-close:hover{background:rgba(239,68,68,.12);color:#fca5a5}
+.hist-list{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:10px}
+.hist-item{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:13px 14px;margin-bottom:8px;cursor:pointer;transition:all .18s;position:relative;animation:fadeUp .25s ease both}
+.hist-item:hover{border-color:rgba(255,255,255,.12);background:rgba(255,255,255,.05)}
+.hist-item-top{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+.hist-badge{background:rgba(99,102,241,.2);border:1px solid rgba(99,102,241,.25);color:rgba(167,139,250,.9);font-size:9px;font-weight:800;padding:2px 7px;border-radius:20px;letter-spacing:.06em;flex-shrink:0}
+.hist-label{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hist-meta{font-size:11px;color:var(--mu)}
+.hist-del{position:absolute;top:10px;right:10px;background:none;border:none;color:rgba(255,255,255,.14);font-size:12px;cursor:pointer;padding:4px;transition:color .15s}
+.hist-del:hover{color:#fca5a5}
+.hist-empty{text-align:center;padding:40px 20px;color:rgba(255,255,255,.2);font-size:13px;line-height:1.8}
+
+/* ═══ TOAST ═══ */
+.toast{
+  position:fixed;bottom:90px;left:50%;transform:translateX(-50%);z-index:600;
+  background:rgba(14,12,26,.97);backdrop-filter:blur(12px);color:#fff;
+  padding:10px 20px;border-radius:50px;border:1px solid rgba(255,255,255,.12);
+  box-shadow:0 8px 32px rgba(0,0,0,.6);display:flex;align-items:center;
+  gap:8px;font-size:13px;font-weight:600;white-space:nowrap;
+  animation:fadeUp .22s ease both;pointer-events:none;
+}
+</style>
+</head>
+<body>
+
+<!-- ══ LOGIN ══ -->
+<div id="screen-login" class="screen active">
+  <div class="orb orb-1"></div><div class="orb orb-2"></div>
+  <div class="login-card">
+    <div class="logo-mark">L</div>
+    <div class="login-brand">LUMA</div>
+    <div class="login-tag">AI-Powered Image Generator</div>
+    <div class="feat-pills">
+      <span class="pill"><i class="fas fa-bolt" style="color:#a78bfa"></i> Cloudflare AI</span>
+      <span class="pill"><i class="fas fa-images" style="color:#60a5fa"></i> Batch export</span>
+      <span class="pill"><i class="fas fa-lock" style="color:#34d399"></i> Private</span>
+    </div>
+    <div class="setup-notice" id="setup-notice" style="display:none">
+      ⚠️ Add <code>GOOGLE_CLIENT_ID</code> in Pages → Settings → Secrets
+    </div>
+    <div class="login-divider">sign in to continue</div>
+    <div id="google-btn-wrap">
+      <div style="color:var(--mu);font-size:13px;display:flex;align-items:center;gap:8px">
+        <i class="fas fa-circle-notch spin"></i> Loading…
+      </div>
+    </div>
+    <div id="g_id_onload" data-client_id="" data-callback="onGoogleToken" data-auto_prompt="true"></div>
+    <p class="login-note">🔒 Your data is private and linked to your Google account.<br>History auto-deletes after 3 days.</p>
+  </div>
+</div>
+
+<!-- ══ TEMPLATES ══ -->
+<div id="screen-templates" class="screen">
+  <div class="t-nav">
+    <div class="t-logo">LUMA</div>
+    <div class="user-chip" onclick="toggleSignOut()">
+      <img id="ua-tmpl" class="user-avatar" src="" alt="">
+      <span id="un-tmpl" class="user-name"></span>
+      <i class="fas fa-chevron-down" style="font-size:9px;color:var(--mu)"></i>
+    </div>
+  </div>
+  <div class="t-body">
+    <div class="t-greeting" id="t-greeting">Hey there 👋</div>
+    <div class="t-hint">Pick a template to get started</div>
+    <div class="t-card" onclick="openTemplate('imggen')">
+      <div class="t-card-glow"></div>
+      <div class="t-card-body">
+        <div class="t-card-icon">🎨</div>
+        <div>
+          <div class="t-card-eyebrow">Template · Active</div>
+          <div class="t-card-name">Image Generator</div>
+          <div class="t-card-desc">Paste any text. AI structures it, renders each post as a 9:16 image — ready to share.</div>
+        </div>
+      </div>
+      <div class="t-card-footer">
+        <div class="t-tags">
+          <span class="t-tag">9:16 format</span>
+          <span class="t-tag">Batch export</span>
+          <span class="t-tag">AI powered</span>
+        </div>
+        <div class="t-card-go"><i class="fas fa-arrow-right"></i></div>
+      </div>
+    </div>
+
+    <div class="t-card" onclick="openTemplate('vidgen')" style="margin-top:14px">
+      <div class="t-card-glow" style="background:radial-gradient(circle at 60% 40%,rgba(239,68,68,.18),transparent 70%)"></div>
+      <div class="t-card-body">
+        <div class="t-card-icon">🎬</div>
+        <div>
+          <div class="t-card-eyebrow">Template · Active</div>
+          <div class="t-card-name">Video Generator</div>
+          <div class="t-card-desc">Type your text + pick a duration. A video clip renders with your overlay text — share directly.</div>
+        </div>
+      </div>
+      <div class="t-card-footer">
+        <div class="t-tags">
+          <span class="t-tag">9:16 video</span>
+          <span class="t-tag">Direct share</span>
+          <span class="t-tag">Kaggle clips</span>
+        </div>
+        <div class="t-card-go"><i class="fas fa-arrow-right"></i></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ CHAT SCREEN ══ -->
+<div id="screen-chat" class="screen">
+  <div class="ch-nav">
+    <button class="ch-nav-back" onclick="show('templates')"><i class="fas fa-arrow-left"></i></button>
+    <div class="ch-nav-center">
+      <div class="ch-nav-icon" id="ch-nav-icon">🎨</div>
+      <div class="ch-nav-title" id="ch-nav-title">Image Generator</div>
+    </div>
+    <div class="ch-nav-right">
+      <select class="ch-model-sel" id="sel-model">
+        <option value="@cf/meta/llama-3.1-8b-instruct-fast">Llama 3.1 8B</option>
+        <option value="@cf/meta/llama-3.3-70b-instruct-fp8-fast">Llama 3.3 70B</option>
+        <option value="@cf/meta/llama-4-scout-17b-16e-instruct">Llama 4 Scout</option>
+        <option value="@cf/qwen/qwen3-30b-a3b-fp8">Qwen3 30B</option>
+        <option value="@cf/mistralai/mistral-small-3.1-24b-instruct">Mistral 24B</option>
+      </select>
+      <button class="ch-hist-btn" onclick="openHistory()"><i class="fas fa-clock-rotate-left"></i> History</button>
+      <div class="user-chip" onclick="toggleSignOut()" style="padding:3px 8px 3px 3px">
+        <img id="ua-chat" class="user-avatar" src="" alt="">
+      </div>
+    </div>
+  </div>
+  <div id="ch-messages" class="ch-messages">
+    <div class="ch-empty" id="ch-empty">
+      <div class="ch-empty-icon">✨</div>
+      <div class="ch-empty-title">Ready to generate</div>
+      <div class="ch-empty-sub">Paste your content below and hit send. Each post becomes a 9:16 image.</div>
+    </div>
+  </div>
+  <!-- Duration row — only shown in vidgen mode -->
+  <div id="vid-duration-row" style="display:none;padding:0 12px 6px;max-width:480px;margin:0 auto;width:100%">
+    <div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:8px 14px">
+      <i class="fas fa-clock" style="color:rgba(255,255,255,.4);font-size:12px"></i>
+      <span style="font-size:12px;color:rgba(255,255,255,.5);white-space:nowrap">Duration</span>
+      <input id="vid-duration" type="range" min="10" max="120" value="30" step="5"
+        oninput="el('vid-dur-val').textContent=this.value+'s'"
+        style="flex:1;accent-color:#8b5cf6;cursor:pointer">
+      <span id="vid-dur-val" style="font-size:13px;font-weight:700;color:#a78bfa;min-width:36px;text-align:right">30s</span>
+    </div>
+  </div>
+  <div class="ch-input-bar">
+    <textarea id="ch-textarea" class="ch-textarea" placeholder="Paste your content here…" rows="1"></textarea>
+    <button id="ch-send" class="ch-send" onclick="sendMessage()"><i class="fas fa-arrow-up"></i></button>
+  </div>
+</div>
+
+<!-- ══ HISTORY DRAWER ══ -->
+<div class="hist-panel" id="hist-panel">
+  <div class="hist-back" onclick="closeHistory()"></div>
+  <div class="hist-drawer">
+    <div class="hist-head">
+      <div>
+        <div class="hist-head-txt">History</div>
+        <div class="hist-sub">Last 3 days · auto-deleted</div>
+      </div>
+      <button class="hist-close" onclick="closeHistory()"><i class="fas fa-xmark"></i></button>
+    </div>
+    <div class="hist-list" id="hist-list"><div class="hist-empty">Loading…</div></div>
+  </div>
+</div>
+
+<!-- ══ SIGN OUT ══ -->
+<div class="signout-menu" id="signout-menu">
+  <div class="signout-user">
+    <div style="font-size:13px;font-weight:700" id="so-name"></div>
+    <div class="signout-email" id="so-email"></div>
+  </div>
+  <button class="signout-btn" onclick="signOut()"><i class="fas fa-right-from-bracket"></i> Sign out</button>
+</div>
+
+<!-- ══ TOAST ══ -->
+<div id="toast" class="toast" style="display:none"></div>
+
+<script>
+'use strict';
+
+/* ═════════════════════════════════════════════
+   STATE
+═════════════════════════════════════════════ */
+let currentUser      = null;
+let _clientId        = '';
+let _currentTemplate = 'imggen';
+let _pollTimer       = null;
+let _seenCount       = 0;
+
+// In-memory stores
+const _svgStore   = {};  // jobId → [svg...]
+const _titleStore = {};  // jobId → [cleanTitle...]
+const _pngCache   = {};  // "jobId::i" → Blob
+
+// ── INTERACTION STATE ───────────────────────────────────
+// Persisted in localStorage under key 'luma_istate'
+// Schema: { "jobId::i": { shared:bool, saved:bool, copied:bool, ts:number, title:string } }
+const LS_ISTATE = 'luma_istate';
+
+function loadIState() {
+  try { return JSON.parse(localStorage.getItem(LS_ISTATE) || '{}'); } catch { return {}; }
+}
+function saveIState(data) {
+  try { localStorage.setItem(LS_ISTATE, JSON.stringify(data)); } catch {}
+}
+function iKey(jobId, index) { return `${jobId}::${index}`; }
+
+// Auto-purge istate entries older than 3 days (keeps localStorage lean)
+function purgeOldIState() {
+  try {
+    const data    = loadIState();
+    const cutoff  = Date.now() - (3 * 24 * 60 * 60 * 1000); // 3 days ago
+    let changed   = false;
+    for (const k of Object.keys(data)) {
+      if ((data[k].ts || 0) < cutoff) { delete data[k]; changed = true; }
+    }
+    if (changed) saveIState(data);
+  } catch {}
+}
+
+// Record an interaction and update UI
+function recordInteraction(jobId, index, type, title) {
+  const data = loadIState();
+  const k    = iKey(jobId, index);
+  if (!data[k]) data[k] = { shared: false, saved: false, copied: false, ts: 0, title: '' };
+  data[k][type] = true;
+  data[k].ts    = Date.now();
+  if (title) data[k].title = title;
+  saveIState(data);
+  applyCardState(jobId, index, data[k]);
+}
+
+// Apply visual state to a card (safe to call when card may not exist yet)
+function applyCardState(jobId, index, state) {
+  const card = el(`card-${jobId}-${index}`);
+  if (!card || !state) return;
+
+  // Outline classes
+  if (state.shared) card.classList.add('was-shared');
+  if (state.saved)  card.classList.add('was-saved');
+  if (state.copied) card.classList.add('was-copied');
+
+  // Badges overlay
+  let badges = el(`badges-${jobId}-${index}`);
+  if (!badges) return;
+  badges.innerHTML = '';
+  if (state.shared) badges.innerHTML += `<div class="ch-badge shared" title="Shared"><i class="fas fa-share-nodes"></i></div>`;
+  if (state.saved)  badges.innerHTML += `<div class="ch-badge saved"  title="Saved"><i class="fas fa-download"></i></div>`;
+  if (state.copied) badges.innerHTML += `<div class="ch-badge copied" title="Copied"><i class="fas fa-copy"></i></div>`;
+}
+
+// Restore all interaction states for cards in a job (called after cards are rendered)
+function restoreJobStates(jobId, count) {
+  const data = loadIState();
+  for (let i = 0; i < count; i++) {
+    const k = iKey(jobId, i);
+    if (data[k]) applyCardState(jobId, i, data[k]);
+  }
+}
+
+/* ═════════════════════════════════════════════
+   RANDOM FILENAME GENERATOR
+   Produces a unique 9-digit numeric string every call,
+   e.g. "luma_481923704.png" — never repeats, browser
+   never triggers "download same file again" prompt.
+═════════════════════════════════════════════ */
+function randName(ext) {
+  // crypto.getRandomValues gives cryptographically random bytes → convert to
+  // a 9-digit decimal string (100000000 – 999999999) for clean filenames.
+  const arr = new Uint32Array(1);
+  crypto.getRandomValues(arr);
+  const n = (arr[0] % 900000000) + 100000000; // always 9 digits
+  return `luma_${n}.${ext}`;
+}
+
+/* ═════════════════════════════════════════════
+   GOOGLE AUTH
+═════════════════════════════════════════════ */
+async function initGoogleAuth() {
+  const saved = localStorage.getItem('zp_user');
+  if (saved) {
+    try { currentUser = JSON.parse(saved); enterApp(); return; }
+    catch { localStorage.removeItem('zp_user'); }
+  }
+  try { const r = await fetch('/config'); const c = await r.json(); _clientId = c.googleClientId || ''; } catch {}
+  const wrap = el('google-btn-wrap');
+  if (!_clientId) { wrap.innerHTML = ''; el('setup-notice').style.display = 'block'; return; }
+  google.accounts.id.initialize({ client_id: _clientId, callback: onGoogleToken, auto_select: false, cancel_on_tap_outside: false });
+  wrap.innerHTML = '';
+  google.accounts.id.renderButton(wrap, { type:'standard', theme:'outline', size:'large', text:'continue_with', shape:'rectangular', logo_alignment:'left', width: wrap.offsetWidth || 320 });
+  google.accounts.id.prompt();
+}
+
+function onGoogleToken(resp) {
+  const p = JSON.parse(atob(resp.credential.split('.')[1]));
+  currentUser = { sub: p.sub, email: p.email, name: p.name, picture: p.picture };
+  localStorage.setItem('zp_user', JSON.stringify(currentUser));
+  enterApp();
+}
+
+function enterApp() {
+  purgeOldIState(); // clean up interaction states older than 3 days
+  const name = currentUser.name?.split(' ')[0] || 'User';
+  const pic  = currentUser.picture || '';
+  ['ua-tmpl','ua-chat'].forEach(id => { const e = el(id); if (e) e.src = pic; });
+  const un = el('un-tmpl'); if (un) un.textContent = name;
+  el('so-name').textContent  = currentUser.name  || '';
+  el('so-email').textContent = currentUser.email || '';
+  const h = new Date().getHours();
+  el('t-greeting').textContent = `${h<12?'Good morning':h<17?'Good afternoon':'Good evening'}, ${name} 👋`;
+  show('templates');
+}
+
+function getDeviceId() { return currentUser?.sub || 'anon'; }
+
+function signOut() {
+  localStorage.removeItem('zp_user'); currentUser = null;
+  el('signout-menu').classList.remove('open');
+  show('login');
+  if (_clientId && window.google?.accounts?.id) {
+    google.accounts.id.disableAutoSelect();
+    const w = el('google-btn-wrap'); w.innerHTML = '';
+    google.accounts.id.renderButton(w, { type:'standard', theme:'outline', size:'large', text:'continue_with', shape:'rectangular', logo_alignment:'left', width: w.offsetWidth || 320 });
+  }
+}
+
+function toggleSignOut() { el('signout-menu').classList.toggle('open'); }
+document.addEventListener('click', e => {
+  const m = el('signout-menu');
+  if (m.classList.contains('open') && !e.target.closest('.user-chip') && !e.target.closest('.signout-menu'))
+    m.classList.remove('open');
+});
+
+/* ═════════════════════════════════════════════
+   SCREENS
+═════════════════════════════════════════════ */
+function show(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  el('screen-' + id).classList.add('active');
+  if (id === 'chat') scrollDown();
+}
+function openTemplate(id) {
+  _currentTemplate = id;
+  const isVid = id === 'vidgen';
+  // Update nav icon + title
+  const icon  = el('ch-nav-icon');
+  const title = el('ch-nav-title');
+  if (icon)  icon.textContent  = isVid ? '🎬' : '🎨';
+  if (title) title.textContent = isVid ? 'Video Generator' : 'Image Generator';
+  // Show/hide duration row
+  const dr = el('vid-duration-row');
+  if (dr) dr.style.display = isVid ? 'block' : 'none';
+  // Update placeholder
+  const ta = el('ch-textarea');
+  if (ta) ta.placeholder = isVid ? 'Type the text to overlay on your video…' : 'Paste your content here…';
+  show('chat');
+}
+
+/* ═════════════════════════════════════════════
+   SEND & POLL
+═════════════════════════════════════════════ */
+async function sendMessage() {
+  const ta   = el('ch-textarea');
+  const text = ta.value.trim();
+  if (!text || _pollTimer) return;
+
+  ta.value = ''; autoResize(ta);
+  setBusy(true);
+  const em = el('ch-empty'); if (em) em.style.display = 'none';
+  addUserBubble(text);
+  const thinkId = 'think-' + Date.now();
+
+  if (_currentTemplate === 'vidgen') {
+    // ── VIDEO FLOW ──
+    const duration = parseInt(el('vid-duration')?.value || '30', 10);
+    addThinkingVideo(thinkId);
+    scrollDown();
+    try {
+      const res  = await fetch('/api/video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, duration, deviceId: getDeviceId() }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      el(thinkId)?.remove();
+      addVideoGroup(data.jobId);
+      scrollDown();
+      _pollTimer = setInterval(() => pollVideoJob(data.jobId), 3000);
+    } catch(e) {
+      el(thinkId)?.remove();
+      addErrorBubble(e.message);
+      setBusy(false);
+    }
+  } else {
+    // ── IMAGE FLOW (original) ──
+    addThinking(thinkId);
+    scrollDown();
+    try {
+      const res  = await fetch('/api', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, model: el('sel-model').value, deviceId: getDeviceId(), template: _currentTemplate }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      el(thinkId)?.remove();
+      _seenCount = 0;
+      addImageGroup(data.jobId, data.total);
+      scrollDown();
+      _pollTimer = setInterval(() => pollJob(data.jobId, data.total), 1400);
+    } catch(e) {
+      el(thinkId)?.remove();
+      addErrorBubble(e.message);
+      setBusy(false);
+    }
+  }
+}
+
+async function pollJob(jobId, expectedTotal) {
+  try {
+    const res = await fetch(`/api/job?jobId=${encodeURIComponent(jobId)}`);
+    const job = await res.json();
+    const results = job.results || [];
+    const total   = job.total || expectedTotal || results.length;
+
+    // Store titles for this job
+    if (!_titleStore[jobId]) _titleStore[jobId] = [];
+    results.forEach((r, i) => { if (r.title) _titleStore[jobId][i] = r.title; });
+
+    // Add newly arrived cards
+    for (let i = _seenCount; i < results.length; i++) {
+      addImageCard(jobId, results[i], i);
+      _seenCount++;
+    }
+    updateGroupHd(jobId, job.done || results.length, total, job.status);
+    scrollDown();
+
+    if (job.status === 'done' || job.status === 'error' || job.status === 'expired') {
+      clearInterval(_pollTimer); _pollTimer = null;
+      // Restore interaction states for all cards
+      restoreJobStates(jobId, results.length);
+      setBusy(false);
+    }
+  } catch {}
+}
+
+/* ═════════════════════════════════════════════
+   DOM BUILDERS
+═════════════════════════════════════════════ */
+function addUserBubble(text) {
+  const d = document.createElement('div');
+  d.className = 'ch-user-msg'; d.textContent = text;
+  msgs().appendChild(d);
+}
+
+function addThinking(id) {
+  const d = document.createElement('div');
+  d.className = 'ch-thinking'; d.id = id;
+  d.innerHTML = `<div class="ch-dots"><span></span><span></span><span></span></div> Generating images…`;
+  msgs().appendChild(d);
+}
+
+function addThinkingVideo(id) {
+  const d = document.createElement('div');
+  d.className = 'ch-thinking'; d.id = id;
+  d.innerHTML = `<div class="ch-dots"><span></span><span></span><span></span></div> Sending to render server…`;
+  msgs().appendChild(d);
+}
+
+/* ── Video poll ───────────────────────────────────────── */
+async function pollVideoJob(jobId) {
+  try {
+    const res = await fetch(`/api/job?jobId=${encodeURIComponent(jobId)}`);
+    const job = await res.json();
+
+    updateVideoGroup(jobId, job);
+
+    if (job.status === 'done' || job.status === 'error' || job.status === 'expired') {
+      clearInterval(_pollTimer); _pollTimer = null;
+      setBusy(false);
+      if (job.status === 'done' && job.videoUrl) {
+        showVideoCard(jobId, job.videoUrl, job.label || 'Video');
+      } else if (job.status === 'error') {
+        addErrorBubble(job.error || 'Video rendering failed. Check GitHub Actions logs.');
+      }
+    }
+  } catch {}
+}
+
+function addVideoGroup(jobId) {
+  const d = document.createElement('div');
+  d.className = 'ch-bot-group'; d.id = `grp-${escHtml(jobId)}`;
+  d.innerHTML = `
+    <div class="ch-group-hd" id="ghd-${escHtml(jobId)}">
+      <div class="ch-group-hd-left">
+        <div class="ch-dots"><span></span><span></span><span></span></div>
+        <span>Rendering video on server… (1–2 min)</span>
+      </div>
+    </div>
+    <div class="ch-img-row" id="row-${escHtml(jobId)}"></div>`;
+  msgs().appendChild(d);
+}
+
+function updateVideoGroup(jobId, job) {
+  const hd = el(`ghd-${jobId}`); if (!hd) return;
+  if (job.status === 'processing') {
+    const sp = hd.querySelector('.ch-group-hd-left span');
+    if (sp) sp.textContent = 'Rendering video on server… (1–2 min)';
+  } else if (job.status === 'done') {
+    hd.innerHTML = `<div class="ch-group-hd-left"><i class="fas fa-check" style="color:var(--gn)"></i><span>Video ready!</span></div>`;
+  } else if (job.status === 'error') {
+    hd.innerHTML = `<div class="ch-group-hd-left"><i class="fas fa-triangle-exclamation" style="color:#ef4444"></i><span>Rendering failed</span></div>`;
+  }
+}
+
+function showVideoCard(jobId, videoUrl, label) {
+  const row  = el(`row-${jobId}`); if (!row) return;
+  const jid  = escHtml(jobId);
+  const card = document.createElement('div');
+  card.className = 'ch-img-card';
+  card.id        = `vcard-${jid}`;
+  card.innerHTML = `
+    <div style="position:relative;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:9/16;max-height:420px">
+      <video id="vid-${jid}" src="${escHtml(videoUrl)}" playsinline muted loop
+        style="width:100%;height:100%;object-fit:cover"
+        onloadeddata="this.play()"></video>
+      <div style="position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,.5);border-radius:6px;padding:3px 8px;font-size:11px;color:#fff">${escHtml(label)}</div>
+    </div>
+    <div class="ch-img-actions">
+      <button class="ch-img-btn-share" onclick="shareVideo('${jid}','${escHtml(videoUrl)}','${escHtml(label)}')">
+        <i class="fas fa-share-nodes"></i> Share
+      </button>
+      <div class="ch-img-btns-row">
+        <button class="ch-img-btn" onclick="dlVideo('${escHtml(videoUrl)}','${escHtml(label)}')">
+          <i class="fas fa-download"></i> Save
+        </button>
+      </div>
+    </div>`;
+  row.appendChild(card);
+  scrollDown();
+}
+
+/* ── Video share / download ───────────────────────────── */
+async function shareVideo(jobId, url, label) {
+  const btn = document.querySelector(`#vcard-${jobId} .ch-img-btn-share`);
+  if (btn) { btn.classList.add('saving'); btn.innerHTML = '<i class="fas fa-circle-notch spin"></i> Sharing…'; }
+  try {
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    const file = new File([blob], randName('mp4'), { type: 'video/mp4' });
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: label, text: label });
+    } else {
+      triggerDownload(blob, randName('mp4'));
+    }
+    toast('Shared! ✓');
+  } catch(e) {
+    if (e.name !== 'AbortError') toast('⚠️ ' + e.message);
+  } finally {
+    if (btn) { btn.classList.remove('saving'); btn.innerHTML = '<i class="fas fa-share-nodes"></i> Share'; }
+  }
+}
+
+async function dlVideo(url, label) {
+  try {
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    triggerDownload(blob, randName('mp4'));
+    toast('Video saved! ✓');
+  } catch(e) {
+    toast('⚠️ ' + e.message);
+  }
+}
+
+function addImageGroup(jobId, total) {
+  const d = document.createElement('div');
+  d.className = 'ch-bot-group'; d.id = `grp-${jobId}`;
+  d.innerHTML = `
+    <div class="ch-group-hd" id="ghd-${escHtml(jobId)}">
+      <div class="ch-group-hd-left">
+        <div class="ch-dots"><span></span><span></span><span></span></div>
+        <span>Processing 0 of ${total}</span>
+      </div>
+    </div>
+    <div class="ch-img-row" id="row-${escHtml(jobId)}"></div>`;
+  msgs().appendChild(d);
+}
+
+function updateGroupHd(jobId, done, total, status) {
+  const hd = el(`ghd-${jobId}`); if (!hd) return;
+  if (status === 'done') {
+    const jid = escHtml(jobId);
+    hd.innerHTML = `
+      <div class="ch-group-hd-left">
+        <i class="fas fa-check" style="color:var(--gn)"></i>
+        <span>${done} image${done !== 1 ? 's' : ''} ready</span>
+      </div>
+      <button class="ch-dl-all-btn" id="dlall-${jid}"
+        onclick="downloadAllImages('${jid}', ${done})">
+        <i class="fas fa-cloud-arrow-down"></i> Download All (${done})
+      </button>`;
+  } else if (status !== 'expired') {
+    const sp = hd.querySelector('.ch-group-hd-left span');
+    if (sp) sp.textContent = `Processing ${done} of ${total}`;
+  }
+}
+
+function addImageCard(jobId, result, index) {
+  if (!_svgStore[jobId]) _svgStore[jobId] = [];
+  _svgStore[jobId][index] = result.svg;
+
+  // Store clean title
+  if (!_titleStore[jobId]) _titleStore[jobId] = [];
+  if (result.title) _titleStore[jobId][index] = result.title;
+
+  const imgSrc = svgSrc(result.svg);
+  const jid    = escHtml(jobId);
+  const safeT  = escHtml(result.title || '');
+
+  const card = document.createElement('div');
+  card.className = 'ch-img-card';
+  card.id        = `card-${jid}-${index}`;
+  card.style.animationDelay = (index % 6 * 60) + 'ms';
+  card.innerHTML = `
+    <div class="ch-img-wrap loading" id="wrap-${jid}-${index}">
+      <img src="${imgSrc}" alt="${safeT}"
+        onload="el('wrap-${jid}-${index}')?.classList.remove('loading')">
+      <div class="ch-img-badges" id="badges-${jid}-${index}"></div>
+    </div>
+    <div class="ch-img-actions">
+      <button class="ch-img-btn-share" id="share-${jid}-${index}"
+        onclick="shareImage('${jid}',${index})">
+        <i class="fas fa-share-nodes"></i> Share
+      </button>
+      <div class="ch-img-btns-row">
+        <button class="ch-img-btn" id="dl-${jid}-${index}"
+          onclick="dlImage('${jid}',${index})">
+          <i class="fas fa-download"></i> Save
+        </button>
+        <button class="ch-img-btn" id="copy-${jid}-${index}"
+          onclick="copyTitle('${jid}',${index})">
+          <i class="fas fa-copy"></i> Copy
+        </button>
+      </div>
+    </div>`;
+  el(`row-${jobId}`)?.appendChild(card);
+
+  // Apply any existing saved interaction state immediately
+  const idata = loadIState();
+  const k     = iKey(jobId, index);
+  if (idata[k]) applyCardState(jobId, index, idata[k]);
+}
+
+function addSessionLabel(ts) {
+  const d = document.createElement('div');
+  d.className = 'ch-session-label';
+  d.textContent = `Session · ${new Date(ts).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}`;
+  msgs().appendChild(d);
+}
+
+function addErrorBubble(msg) {
+  const d = document.createElement('div');
+  d.className = 'ch-error';
+  d.innerHTML = `<i class="fas fa-triangle-exclamation" style="margin-right:6px"></i>${escHtml(msg)}`;
+  msgs().appendChild(d);
+}
+
+/* ═════════════════════════════════════════════
+   TITLE HELPER — get clean stored title
+═════════════════════════════════════════════ */
+function getTitle(jobId, index) {
+  // 1. Try in-memory store (fastest)
+  const t = _titleStore[jobId]?.[index];
+  if (t) return t;
+  // 2. Try interaction state store (persisted)
+  const idata = loadIState();
+  const saved = idata[iKey(jobId, index)]?.title;
+  if (saved) return saved;
+  // 3. Extract from SVG text content
+  const svg = _svgStore[jobId]?.[index] || '';
+  const m   = svg.match(/<text[^>]*>(?:<tspan[^>]*>)?([^<]+)/);
+  return m ? m[1].replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"') : `Image ${index + 1}`;
+}
+
+/* ═════════════════════════════════════════════
+   PNG BLOB CACHE
+═════════════════════════════════════════════ */
+async function getPngBlob(jobId, index) {
+  const k = iKey(jobId, index);
+  if (_pngCache[k]) return _pngCache[k];
+  const svg  = _svgStore[jobId]?.[index];
+  if (!svg) return null;
+  const blob = await svgToPng(svg);
+  if (blob) _pngCache[k] = blob;
+  return blob;
+}
+
+/* ═════════════════════════════════════════════
+   SHARE
+═════════════════════════════════════════════ */
+async function shareImage(jobId, index) {
+  const btn = el(`share-${jobId}-${index}`);
+  if (btn) { btn.classList.add('saving'); btn.innerHTML = '<i class="fas fa-circle-notch spin"></i> Sharing…'; }
+
+  try {
+    const blob  = await getPngBlob(jobId, index);
+    if (!blob) throw new Error('Image not ready yet, please wait');
+
+    const title = getTitle(jobId, index);
+    try { await navigator.clipboard.writeText(title); } catch {}
+
+    // ── Record interaction BEFORE share so border always appears ──
+    recordInteraction(jobId, index, 'shared', title);
+
+    // ── Random filename: browser never sees the same name twice ──
+    const file = new File([blob], randName('png'), { type: 'image/png' });
+
+    if (navigator.share) {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title, text: title });
+      } else {
+        await navigator.share({ title, text: title });
+      }
+    } else {
+      // Desktop: download as fallback
+      triggerDownload(blob, randName('png'));
+    }
+
+    toast('Shared! Title copied ✓');
+  } catch(e) {
+    if (e.name === 'AbortError') return; // user cancelled — silent
+    toast('⚠️ ' + e.message);
+  } finally {
+    if (btn) { btn.classList.remove('saving'); btn.innerHTML = '<i class="fas fa-share-nodes"></i> Share'; }
+  }
+}
+
+/* ═════════════════════════════════════════════
+   DOWNLOAD SINGLE
+═════════════════════════════════════════════ */
+async function dlImage(jobId, index) {
+  const btn = el(`dl-${jobId}-${index}`);
+  if (btn) { btn.classList.add('saving'); btn.innerHTML = '<i class="fas fa-circle-notch spin"></i>'; }
+
+  try {
+    const blob = await getPngBlob(jobId, index);
+    if (blob) {
+      // ── Random filename every time ──
+      triggerDownload(blob, randName('png'));
+      const title = getTitle(jobId, index);
+      recordInteraction(jobId, index, 'saved', title);
+      toast('Saved to gallery! ✓');
+    } else {
+      const svg = _svgStore[jobId]?.[index];
+      if (!svg) throw new Error('Image not ready');
+      // ── Random filename for SVG fallback too ──
+      triggerDownload(new Blob([svg], { type:'image/svg+xml' }), randName('svg'));
+      toast('Saved as SVG!');
+    }
+  } catch(e) {
+    toast('⚠️ ' + e.message);
+  } finally {
+    if (btn) { btn.classList.remove('saving'); btn.innerHTML = '<i class="fas fa-download"></i> Save'; }
+  }
+}
+
+/* ═════════════════════════════════════════════
+   DOWNLOAD ALL
+═════════════════════════════════════════════ */
+async function downloadAllImages(jobId, count) {
+  const btn = el(`dlall-${jobId}`);
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch spin"></i> Saving…'; }
+
+  let done = 0;
+  for (let i = 0; i < count; i++) {
+    try {
+      const blob = await getPngBlob(jobId, i);
+      if (blob) {
+        // ── Each file in the batch gets its own random name ──
+        triggerDownload(blob, randName('png'));
+        recordInteraction(jobId, i, 'saved', getTitle(jobId, i));
+        done++;
+        await sleep(380); // stagger so browser accepts each download
+      }
+    } catch {}
+  }
+
+  if (btn) { btn.disabled = false; btn.innerHTML = `<i class="fas fa-cloud-arrow-down"></i> Download All (${count})`; }
+  toast(`Downloaded ${done} of ${count} images ✓`);
+}
+
+/* ═════════════════════════════════════════════
+   COPY TITLE
+═════════════════════════════════════════════ */
+async function copyTitle(jobId, index) {
+  const title = getTitle(jobId, index);
+  try { await navigator.clipboard.writeText(title); } catch {}
+  // ── Record interaction ──
+  recordInteraction(jobId, index, 'copied', title);
+  const btn = el(`copy-${jobId}-${index}`); if (!btn) return;
+  btn.innerHTML = '<i class="fas fa-check" style="color:var(--gn)"></i> Done';
+  setTimeout(() => { btn.innerHTML = '<i class="fas fa-copy"></i> Copy'; }, 1800);
+  toast('Title copied ✓');
+}
+
+/* ═════════════════════════════════════════════
+   SVG → PNG
+═════════════════════════════════════════════ */
+function svgToPng(svgString) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload  = () => {
+      const c = document.createElement('canvas');
+      c.width = 1080; c.height = 1920;
+      c.getContext('2d').drawImage(img, 0, 0, 1080, 1920);
+      c.toBlob(b => resolve(b || null), 'image/png');
+    };
+    img.onerror = () => resolve(null);
+    img.src = svgSrc(svgString);
   });
 }
 
-// ══════════════════════════════════════════════════════════
-// TEXT HELPERS
-// ══════════════════════════════════════════════════════════
-
-// Strip leading post numbers: "1.", "1:", "1)", "(1)", "Post 1:", "第一：" etc.
-function stripPostNumber(title) {
-  return (title || '')
-    .replace(/^\s*(?:post\s*)?\d+\s*[.:\)]\s*/i, '')   // 1. / 1: / 1) / Post 1:
-    .replace(/^\s*\(\d+\)\s*/,                '')        // (1)
-    .replace(/^\s*第\s*[\d一二三四五六七八九十百]+\s*[：:条篇部张节]\s*/i, '') // 第一：
-    .replace(/^\s*#+\s*/,                      '')        // ## markdown headings
-    .trim();
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a   = Object.assign(document.createElement('a'), { href: url, download: filename });
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
-// Remove ** markers to get plain text
-function cleanText(t) {
-  return (t || '').replace(/\*\*/g, '').trim();
+/* ═════════════════════════════════════════════
+   HISTORY
+═════════════════════════════════════════════ */
+async function openHistory() {
+  el('hist-panel').classList.add('open');
+  el('hist-list').innerHTML = '<div class="hist-empty"><i class="fas fa-circle-notch spin" style="font-size:18px;display:block;margin-bottom:8px"></i>Loading…</div>';
+  const deviceId = getDeviceId();
+  if (deviceId === 'anon') { el('hist-list').innerHTML = '<div class="hist-empty">Sign in to view history.</div>'; return; }
+  try {
+    const r = await fetch(`/history?deviceId=${encodeURIComponent(deviceId)}&template=${_currentTemplate}`);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    renderHistory(d.sessions || []);
+  } catch(e) {
+    el('hist-list').innerHTML = `<div class="hist-empty" style="color:#fca5a5">Error: ${escHtml(e.message)}</div>`;
+  }
 }
 
-// All zodiac signs (English + Chinese + Japanese + Spanish)
-const ZODIAC_RE = /(?<!\*\*)(白羊座|牡羊座|金牛座|雙子座|双子座|巨蟹座|獅子座|狮子座|處女座|处女座|天秤座|天蠍座|天蝎座|射手座|摩羯座|水瓶座|雙魚座|双鱼座|牡牛座|蟹座|乙女座|蠍座|山羊座|魚座|Aries|Taurus|Gemini|Cancer|Leo|Virgo|Libra|Scorpio|Sagittarius|Capricorn|Aquarius|Pisces|Ario|Tauro|Géminis|Cáncer|Virgo|Escorpio|Sagitario|Capricornio|Acuario|Piscis)(?!\*\*)/gi;
+function closeHistory() { el('hist-panel').classList.remove('open'); }
 
-// Ensure zodiac names are bolded (idempotent — won't double-bold)
-function ensureZodiacBold(text) {
-  if (!text) return text;
-  return text.replace(ZODIAC_RE, '**$1**');
-}
-
-// ══════════════════════════════════════════════════════════
-// SVG IMAGE GENERATOR
-// 1080×1920 — server-side, no browser needed
-// Features: emoji fonts, CJK char-wrap, bold tspan, clip overflow
-// ══════════════════════════════════════════════════════════
-const EMOJI_FONT = `'Apple Color Emoji','Noto Color Emoji','Segoe UI Emoji','Segoe UI Symbol'`;
-const BASE_FONT  = `ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif,${EMOJI_FONT}`;
-
-function generateSVG(post) {
-  const W = 1080, H = 1920;
-  // PX = 110px ≈ visually 3-4cm margin on a standard phone display
-  const PX = 110, PY = 130;
-  const CW     = W - PX * 2;   // 860px usable width
-  const BOTTOM = H - PY;       // 1790 — hard floor
-
-  const rawTitle = (post.title   || '').trim();
-  const content  = (post.content || []);
-  const plainT   = cleanText(rawTitle);
-
-  // Adaptive sizing — all font sizes increased 20% from previous values
-  const visLen = charVisLen(plainT) + charVisLen(content.map(l => cleanText(l||'')).join(''));
-  let ts, bs, tlh, blh, gap;
-  if      (visLen < 80)  { ts=96; bs=62; tlh=134; blh=90; gap=76; }
-  else if (visLen < 150) { ts=86; bs=55; tlh=120; blh=82; gap=68; }
-  else if (visLen < 260) { ts=74; bs=49; tlh=104; blh=72; gap=58; }
-  else if (visLen < 420) { ts=65; bs=44; tlh= 92; blh=64; gap=50; }
-  else if (visLen < 620) { ts=55; bs=40; tlh= 80; blh=58; gap=44; }
-  else if (visLen < 900) { ts=48; bs=35; tlh= 70; blh=50; gap=36; }
-  else                   { ts=41; bs=31; tlh= 60; blh=44; gap=32; }
-
-  // CPL in visual units.
-  // Factor 0.50 = accurate for CJK (each CJK char = 1em wide, counted as 2 visual units → 0.5px per VU).
-  // For Latin at ~0.52em avg glyph: factor 0.50 fills lines to the margin without overflowing.
-  // This ensures text reaches the right margin edge rather than wrapping too early.
-  const tCPL = Math.floor(CW / (ts * 0.50));
-  const bCPL = Math.floor(CW / (bs * 0.50));
-
-  // Wrap title
-  const titleLines = smartWrap(rawTitle, tCPL);
-
-  // Wrap body
-  const bodyLines = [];
-  for (const line of content) {
-    const raw = line || '';
-    if (!cleanText(raw)) {
-      bodyLines.push({ raw: '', gap: true });
-    } else {
-      for (const w of smartWrap(raw, bCPL)) bodyLines.push({ raw: w, gap: false });
-    }
-  }
-
-  // Total height
-  const titleH = titleLines.length * tlh;
-  const bodyH  = bodyLines.reduce((s, l) => s + (l.gap ? blh * 0.5 : blh), 0);
-  const totalH = titleH + (bodyLines.length ? gap + bodyH : 0);
-
-  // Vertical centering
-  let y = totalH > (H - PY * 2)
-    ? PY + ts
-    : Math.max(PY + ts, Math.round((H - totalH) / 2) + ts);
-
-  const els = [];
-
-  // Title
-  for (const line of titleLines) {
-    if (y > BOTTOM + ts) break;
-    els.push(renderLine(PX, y, BASE_FONT, ts, 800, '#FFFFFF', line));
-    y += tlh;
-  }
-
-  // Accent bar
-  if (bodyLines.length) {
-    const ay = y + Math.round(gap * 0.28);
-    if (ay < BOTTOM) {
-      els.push(`<rect x="${PX}" y="${ay}" width="44" height="4" rx="2" fill="rgba(139,92,246,0.75)"/>`);
-    }
-    y += gap;
-  }
-
-  // Body
-  for (const line of bodyLines) {
-    if (!line.gap && y > BOTTOM + bs) break;
-    if (!line.gap) {
-      els.push(renderLine(PX, y, BASE_FONT, bs, 400, 'rgba(255,255,255,0.85)', line.raw));
-    }
-    y += line.gap ? Math.round(blh * 0.5) : blh;
-  }
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
-<defs>
-  <linearGradient id="bg" x1="0" y1="0" x2="${W}" y2="${H}" gradientUnits="userSpaceOnUse">
-    <stop offset="0%"   stop-color="#06020f"/>
-    <stop offset="55%"  stop-color="#080412"/>
-    <stop offset="100%" stop-color="#00091a"/>
-  </linearGradient>
-  <clipPath id="clip"><rect width="${W}" height="${H}"/></clipPath>
-</defs>
-<rect width="${W}" height="${H}" fill="url(#bg)"/>
-<g clip-path="url(#clip)">
-${els.join('\n')}
-</g>
-</svg>`;
-}
-
-// ── Render one text line (supports **bold** tspan) ──────
-function renderLine(px, y, ff, fs, fw, fill, rawText) {
-  const segs    = parseBold(rawText);
-  const hasBold = segs.some(s => s.bold);
-
-  if (!hasBold) {
-    return `<text x="${px}" y="${y}" font-family="${ff}" font-size="${fs}" font-weight="${fw}" fill="${fill}" xml:space="preserve">${xe(cleanText(rawText))}</text>`;
-  }
-  const spans = segs.map(s => {
-    const w = s.bold ? 900 : fw;
-    const c = s.bold ? '#FFFFFF' : fill;
-    return `<tspan font-weight="${w}" fill="${c}">${xe(s.t)}</tspan>`;
+function renderHistory(sessions) {
+  const list = el('hist-list');
+  if (!sessions.length) { list.innerHTML = '<div class="hist-empty">No history yet.<br>Your sessions appear here for 3 days.</div>'; return; }
+  list.innerHTML = sessions.map(s => {
+    const date  = new Date(s.timestamp).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    const done  = s.done  || 0;
+    const total = s.total || 0;
+    const label = escHtml(s.label || 'Session');
+    const jid   = escHtml(s.jobId);
+    const cnt   = s.status === 'done' ? done : `${done}/${total}`;
+    const badge = s.template === 'vidgen' ? 'VID' : 'IMG';
+    return `<div class="hist-item" onclick="loadSession('${jid}')">
+      <div class="hist-item-top">
+        <span class="hist-badge">${cnt} ${badge}</span>
+        <span class="hist-label">${label}</span>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div class="hist-meta">${date}</div>
+        <button class="hist-del" onclick="delSession(event,'${jid}')"><i class="fas fa-xmark"></i></button>
+      </div>
+    </div>`;
   }).join('');
-  return `<text x="${px}" y="${y}" font-family="${ff}" font-size="${fs}" font-weight="${fw}" fill="${fill}" xml:space="preserve">${spans}</text>`;
 }
 
-// ── Parse **bold** markers into segments ────────────────
-function parseBold(text) {
-  const segs = [], re = /\*\*(.*?)\*\*/g;
-  let last = 0, m;
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > last) segs.push({ t: text.slice(last, m.index), bold: false });
-    if (m[1])           segs.push({ t: m[1], bold: true });
-    last = re.lastIndex;
+async function loadSession(jobId) {
+  closeHistory();
+  clearChat();
+  addThinking('hist-load');
+  scrollDown();
+  try {
+    const r   = await fetch(`/api/job?jobId=${encodeURIComponent(jobId)}`);
+    const job = await r.json();
+    el('hist-load')?.remove();
+    if (job.status === 'expired') {
+      addErrorBubble('This session has expired (older than 3 days).'); return;
+    }
+    addSessionLabel(job.timestamp);
+
+    // ── Video session ──
+    if (job.template === 'vidgen') {
+      addVideoGroup(jobId);
+      updateVideoGroup(jobId, job);
+      if (job.status === 'done' && job.videoUrl) showVideoCard(jobId, job.videoUrl, job.label || 'Video');
+      scrollDown(); return;
+    }
+
+    // ── Image session ──
+    if (!_titleStore[jobId]) _titleStore[jobId] = [];
+    (job.results || []).forEach((r, i) => { if (r.title) _titleStore[jobId][i] = r.title; });
+    addImageGroup(jobId, job.total);
+    for (let i = 0; i < (job.results||[]).length; i++) addImageCard(jobId, job.results[i], i);
+    updateGroupHd(jobId, job.done, job.total, job.status);
+    restoreJobStates(jobId, (job.results||[]).length);
+    scrollDown();
+  } catch(e) {
+    el('hist-load')?.remove();
+    addErrorBubble('Failed to load session: ' + e.message);
   }
-  if (last < text.length) segs.push({ t: text.slice(last), bold: false });
-  return segs.filter(s => s.t);
 }
 
-// ── Visual char length (CJK + emoji = 2) ───────────────
-function charVisLen(str) {
+async function delSession(e, jobId) {
+  e.stopPropagation();
+  await fetch('/history',{ method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({jobId}) });
+  openHistory();
+}
+
+/* ═════════════════════════════════════════════
+   UTILS
+═════════════════════════════════════════════ */
+function clearChat() {
+  const m = el('ch-messages');
+  m.innerHTML = '';
+  const em = document.createElement('div');
+  em.className = 'ch-empty'; em.id = 'ch-empty';
+  em.innerHTML = `<div class="ch-empty-icon">✨</div>
+    <div class="ch-empty-title">Ready to generate</div>
+    <div class="ch-empty-sub">Paste your content below and hit send.</div>`;
+  m.appendChild(em);
+}
+
+function msgs()    { return el('ch-messages'); }
+function el(id)    { return document.getElementById(id); }
+function escHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function svgSrc(s) { return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s); }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function scrollDown() {
+  const m = el('ch-messages');
+  requestAnimationFrame(() => { m.scrollTop = m.scrollHeight; });
+}
+function setBusy(b) { const s = el('ch-send'); if (s) s.disabled = b; }
+
+let _toastTimer;
+function toast(msg) {
+  const t = el('toast');
+  t.innerHTML = `<i class="fas fa-circle-check" style="color:var(--gn)"></i>${escHtml(msg)}`;
+  t.style.display = 'flex';
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => t.style.display = 'none', 2800);
+}
+
+function autoResize(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 140) + 'px';
+}
+
+/* ── Textarea ── */
+document.addEventListener('DOMContentLoaded', () => {
+  const ta = el('ch-textarea');
+  if (ta) {
+    ta.addEventListener('input',   () => autoResize(ta));
+    ta.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    });
+  }
+});
+
+/* ── Init ── */
+window.onGoogleLibraryLoad = () => { initGoogleAuth(); };
+window.addEventListener('DOMContentLoaded', () => {
+  if (window.google?.accounts?.id) { initGoogleAuth(); return; }
   let n = 0;
-  for (const ch of [...(str || '')]) n += isWide(ch) ? 2 : 1;
-  return n;
-}
-
-function isWide(ch) {
-  const cp = ch.codePointAt(0);
-  return (
-    cp >= 0x1F000 ||
-    (cp >= 0x2600 && cp <= 0x27FF)  ||
-    (cp >= 0xFE00 && cp <= 0xFE0F)  ||
-    (cp >= 0x4E00 && cp <= 0x9FFF)  ||  // CJK Unified
-    (cp >= 0x3400 && cp <= 0x4DBF)  ||  // CJK Ext A
-    (cp >= 0x20000&& cp <= 0x2FA1F) ||  // CJK Ext B-F
-    (cp >= 0x3040 && cp <= 0x30FF)  ||  // Hiragana/Katakana
-    (cp >= 0xAC00 && cp <= 0xD7AF)  ||  // Korean Hangul
-    (cp >= 0x1100 && cp <= 0x11FF)  ||
-    (cp >= 0xFF00 && cp <= 0xFFEF)  ||  // Fullwidth
-    (cp >= 0x3000 && cp <= 0x303F)  ||  // CJK Symbols
-    (cp >= 0x3200 && cp <= 0x33FF)      // Enclosed CJK
-  );
-}
-
-// ── Smart wrap: CJK char-level, Latin word-level ────────
-function smartWrap(text, cpl) {
-  if (!text) return [''];
-  const plain      = cleanText(text);
-  const spaceCount = (plain.match(/ /g) || []).length;
-  const wideCount  = [...plain].filter(isWide).length;
-  const isCJK      = wideCount > plain.length * 0.3 || (wideCount > 2 && spaceCount < 2);
-  return isCJK ? wrapCJK(text, cpl) : wrapLatin(text, cpl);
-}
-
-// CJK: break at any char boundary, preserve ** markers
-function wrapCJK(text, cpl) {
-  const lines = [];
-  let curRaw = '', curLen = 0, inBold = false;
-  const chars = [...text];
-  let i = 0;
-  while (i < chars.length) {
-    if (chars[i] === '*' && chars[i+1] === '*') {
-      curRaw += '**'; inBold = !inBold; i += 2; continue;
+  const t = setInterval(() => {
+    if (window.google?.accounts?.id)     { clearInterval(t); initGoogleAuth(); }
+    else if (++n > 60) {
+      clearInterval(t);
+      const w = el('google-btn-wrap');
+      if (w) w.innerHTML = '<span style="color:#fca5a5;font-size:13px">⚠️ Google sign-in failed to load</span>';
     }
-    const ch    = chars[i];
-    const chLen = isWide(ch) ? 2 : 1;
-    if (curLen + chLen > cpl && cleanText(curRaw).length > 0) {
-      if (inBold) curRaw += '**';
-      lines.push(curRaw);
-      curRaw = inBold ? '**' + ch : ch;
-      curLen = chLen;
-    } else {
-      curRaw += ch; curLen += chLen;
-    }
-    i++;
-  }
-  if (cleanText(curRaw)) lines.push(curRaw);
-  return lines.length ? lines : [''];
-}
-
-// Latin: word-level wrap
-function wrapLatin(text, cpl) {
-  const words = text.split(' ');
-  const lines = [];
-  let cur = '', curLen = 0;
-  for (const word of words) {
-    const wLen = charVisLen(cleanText(word));
-    const sep  = cur ? 1 : 0;
-    if (curLen + sep + wLen > cpl && cur) {
-      lines.push(cur); cur = word; curLen = wLen;
-    } else {
-      cur    = cur ? `${cur} ${word}` : word;
-      curLen += sep + wLen;
-    }
-  }
-  if (cur) lines.push(cur);
-  return lines.length ? lines : [''];
-}
-
-// ── XML escape ───────────────────────────────────────────
-function xe(s) {
-  return (s || '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-// ── JSON repair ─────────────────────────────────────────
-function repairJSON(str) {
-  try { JSON.parse(str); return str; } catch {}
-  let s = str.replace(/,\s*$/, '');
-  let b = 0, br = 0, inS = false, esc = false;
-  for (const c of s) {
-    if (esc) { esc = false; continue; }
-    if (c === '\\' && inS) { esc = true; continue; }
-    if (c === '"') { inS = !inS; continue; }
-    if (inS) continue;
-    if (c === '{') b++; if (c === '}') b--;
-    if (c === '[') br++;if (c === ']') br--;
-  }
-  if (inS) s += '"';
-  s = s.replace(/,\s*$/, '');
-  while (br-- > 0) s += ']';
-  while (b--  > 0) s += '}';
-  return s;
-}
-
-function extractFallback(raw) {
-  const posts = [];
-  const re    = /"title"\s*:\s*"([^"]+)"[^}]*?"content"\s*:\s*(\[[^\]]+\])/gs;
-  let m;
-  while ((m = re.exec(raw)) !== null) {
-    try { posts.push({ title: m[1], content: JSON.parse(m[2]) }); } catch {}
-  }
-  return posts;
-}
+  }, 100);
+});
+</script>
+</body>
+</html>
