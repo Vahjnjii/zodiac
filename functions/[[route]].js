@@ -238,7 +238,7 @@ JSON:`;
           results: [], videoUrl: null,
           error: `GitHub trigger failed: ${ghRes.status} ${errText.slice(0, 200)}`,
         }), { expirationTtl: TTL });
-        return json({ error: `Failed to trigger render: ${ghRes.status}` }, 500, H);
+        return json({ error: `Failed to trigger render: ${ghRes.status} | token_starts: ${env.GITHUB_TOKEN?.slice(0,10)} | repo: ${env.GITHUB_REPO} | detail: ${errText.slice(0,300)}` }, 500, H);
       }
     } catch(e) {
       await env.KV.put(jobId, JSON.stringify({
