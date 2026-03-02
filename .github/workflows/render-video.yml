@@ -1,0 +1,235 @@
+name: Render Video
+
+on:
+  repository_dispatch:
+    types: [render-video]
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg python3-pip
+          pip3 install kaggle --quiet
+
+      - name: Download random video from Kaggle
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: |
+          mkdir -p ~/.kaggle
+          echo '{"username":"'"$KAGGLE_USERNAME"'","key":"'"$KAGGLE_KEY"'"}' > ~/.kaggle/kaggle.json
+          chmod 600 ~/.kaggle/kaggle.json
+
+          DATASET="${{ github.event.client_payload.kaggleDataset }}"
+          echo "Downloading from: $DATASET"
+
+          # Download dataset file listing
+          kaggle datasets files $DATASET --csv > files.csv 2>/dev/null || true
+
+          # Get all mp4 files
+          grep -i "\.mp4" files.csv | awk -F',' '{print $1}' > mp4list.txt || true
+
+          if [ ! -s mp4list.txt ]; then
+            echo "No mp4 list found, downloading full dataset..."
+            kaggle datasets download $DATASET --unzip -p ./videos/
+            find ./videos -name "*.mp4" > mp4list.txt
+          fi
+
+          # Pick a random file
+          TOTAL=$(wc -l < mp4list.txt)
+          echo "Total videos: $TOTAL"
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "ERROR: No videos found in dataset"
+            exit 1
+          fi
+          PICK=$(( (RANDOM % TOTAL) + 1 ))
+          CHOSEN=$(sed -n "${PICK}p" mp4list.txt)
+          echo "Chosen: $CHOSEN"
+
+          if [ ! -f "./videos/$CHOSEN" ]; then
+            kaggle datasets download $DATASET -f "$CHOSEN" --unzip -p ./videos/
+          fi
+
+          # Find the actual downloaded file
+          find ./videos -name "*.mp4" | head -1 > chosen_file.txt
+          cat chosen_file.txt
+          echo "VIDEO_PATH=$(cat chosen_file.txt)" >> $GITHUB_ENV
+
+      - name: Render video with FFmpeg
+        run: |
+          JOB_ID="${{ github.event.client_payload.jobId }}"
+          DURATION="${{ github.event.client_payload.duration }}"
+          OVERLAY_TEXT="${{ github.event.client_payload.overlayText }}"
+          INPUT="$VIDEO_PATH"
+
+          echo "Job: $JOB_ID | Duration: ${DURATION}s | Text: $OVERLAY_TEXT"
+
+          # Escape special chars in text for ffmpeg drawtext
+          SAFE_TEXT=$(echo "$OVERLAY_TEXT" | sed "s/'/'\\\\''/g" | sed 's/:/\\:/g')
+
+          # Build FFmpeg command:
+          # - setpts=2.0*PTS = half speed
+          # - loop until duration is reached
+          # - drawtext overlay at bottom center with word wrap
+          ffmpeg -y \
+            -stream_loop -1 -i "$INPUT" \
+            -vf "setpts=2.0*PTS,
+                 scale=1080:1920:force_original_aspect_ratio=increase,
+                 crop=1080:1920,
+                 drawtext=text='${SAFE_TEXT}':
+                   fontsize=52:
+                   fontcolor=white:
+                   shadowcolor=black@0.8:
+                   shadowx=2:shadowy=2:
+                   x=(w-text_w)/2:
+                   y=h-200:
+                   line_spacing=12:
+                   borderw=3:
+                   bordercolor=black@0.6" \
+            -t "$DURATION" \
+            -an \
+            -c:v libx264 -preset fast -crf 23 \
+            -movflags +faststart \
+            output.mp4
+
+          echo "FFmpeg done. File size: $(du -sh output.mp4)"
+
+      - name: Upload to Cloudflare R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: |
+          pip3 install boto3 --quiet
+
+          JOB_ID="${{ github.event.client_payload.jobId }}"
+          FILENAME="video-$(echo $JOB_ID | md5sum | head -c12).mp4"
+
+          python3 << 'EOF'
+          import boto3, os, sys
+
+          s3 = boto3.client(
+            "s3",
+            endpoint_url=f"https://{os.environ['CF_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+            aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+            aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+            region_name="auto"
+          )
+
+          bucket = os.environ["R2_BUCKET_NAME"]
+          job_id = "${{ github.event.client_payload.jobId }}"
+          filename = f"video-{hash(job_id) & 0xFFFFFFFF:08x}.mp4"
+
+          print(f"Uploading output.mp4 → r2://{bucket}/{filename}")
+          s3.upload_file(
+            "output.mp4", bucket, filename,
+            ExtraArgs={"ContentType": "video/mp4", "CacheControl": "public, max-age=86400"}
+          )
+
+          # Public URL via R2 Public Development URL
+          base = os.environ["R2_PUBLIC_BASE_URL"].rstrip("/")
+          public_url = f"{base}/{filename}"
+          print(f"Public URL: {public_url}")
+
+          # Write URL to file for next step
+          with open("video_url.txt", "w") as f:
+            f.write(public_url)
+          EOF
+
+      - name: Update KV job status to done
+        env:
+          CF_KV_API_TOKEN: ${{ secrets.CF_KV_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+        run: |
+          JOB_ID="${{ github.event.client_payload.jobId }}"
+          VIDEO_URL=$(cat video_url.txt)
+
+          python3 << 'EOF'
+          import json, os, urllib.request, urllib.error
+
+          job_id = "${{ github.event.client_payload.jobId }}"
+          video_url = open("video_url.txt").read().strip()
+          token = os.environ["CF_KV_API_TOKEN"]
+          account_id = os.environ["CF_ACCOUNT_ID"]
+          namespace_id = os.environ["CF_KV_NAMESPACE_ID"]
+
+          # First fetch current job data
+          url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/{urllib.parse.quote(job_id, safe='')}"
+
+          import urllib.parse
+          key_encoded = urllib.parse.quote(job_id, safe='')
+          get_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/{key_encoded}"
+
+          headers = {"Authorization": f"Bearer {token}"}
+
+          try:
+            req = urllib.request.Request(get_url, headers=headers)
+            with urllib.request.urlopen(req) as resp:
+              current = json.loads(resp.read())
+          except:
+            current = {}
+
+          # Update with video URL and done status
+          current["status"] = "done"
+          current["videoUrl"] = video_url
+          current["done"] = 1
+
+          put_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/{key_encoded}"
+          put_data = json.dumps(current).encode()
+          req = urllib.request.Request(put_url, data=put_data, headers={**headers, "Content-Type": "application/json"}, method="PUT")
+
+          try:
+            with urllib.request.urlopen(req) as resp:
+              result = json.loads(resp.read())
+              print("KV updated:", result.get("success"))
+          except urllib.error.HTTPError as e:
+            print("KV update error:", e.code, e.read())
+            sys.exit(1)
+          EOF
+
+      - name: Mark job failed on error
+        if: failure()
+        env:
+          CF_KV_API_TOKEN: ${{ secrets.CF_KV_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+        run: |
+          python3 << 'EOF'
+          import json, os, urllib.request, urllib.parse
+
+          job_id = "${{ github.event.client_payload.jobId }}"
+          token = os.environ["CF_KV_API_TOKEN"]
+          account_id = os.environ["CF_ACCOUNT_ID"]
+          namespace_id = os.environ["CF_KV_NAMESPACE_ID"]
+
+          key_encoded = urllib.parse.quote(job_id, safe='')
+          get_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/{key_encoded}"
+          headers = {"Authorization": f"Bearer {token}"}
+
+          try:
+            req = urllib.request.Request(get_url, headers=headers)
+            with urllib.request.urlopen(req) as resp:
+              current = json.loads(resp.read())
+          except:
+            current = {}
+
+          current["status"] = "error"
+          current["error"] = "Video rendering failed on GitHub Actions. Check logs."
+
+          put_url = get_url
+          put_data = json.dumps(current).encode()
+          req = urllib.request.Request(put_url, data=put_data, headers={**headers, "Content-Type": "application/json"}, method="PUT")
+          try:
+            with urllib.request.urlopen(req) as resp:
+              print("KV error status set:", json.loads(resp.read()).get("success"))
+          except Exception as e:
+            print("Failed to mark error:", e)
+          EOF
