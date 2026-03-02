@@ -493,6 +493,19 @@ function saveIState(data) {
 }
 function iKey(jobId, index) { return `${jobId}::${index}`; }
 
+// Auto-purge istate entries older than 3 days (keeps localStorage lean)
+function purgeOldIState() {
+  try {
+    const data    = loadIState();
+    const cutoff  = Date.now() - (3 * 24 * 60 * 60 * 1000); // 3 days ago
+    let changed   = false;
+    for (const k of Object.keys(data)) {
+      if ((data[k].ts || 0) < cutoff) { delete data[k]; changed = true; }
+    }
+    if (changed) saveIState(data);
+  } catch {}
+}
+
 // Record an interaction and update UI
 function recordInteraction(jobId, index, type, title) {
   const data = loadIState();
@@ -559,6 +572,7 @@ function onGoogleToken(resp) {
 }
 
 function enterApp() {
+  purgeOldIState(); // clean up interaction states older than 3 days
   const name = currentUser.name?.split(' ')[0] || 'User';
   const pic  = currentUser.picture || '';
   ['ua-tmpl','ua-chat'].forEach(id => { const e = el(id); if (e) e.src = pic; });
@@ -819,6 +833,10 @@ async function shareImage(jobId, index) {
     const title = getTitle(jobId, index);
     try { await navigator.clipboard.writeText(title); } catch {}
 
+    // ── Record interaction BEFORE share so border always appears ──
+    // (On some Android browsers navigator.share doesn't trigger catch/then reliably)
+    recordInteraction(jobId, index, 'shared', title);
+
     const file = new File([blob], `luma_${index + 1}.png`, { type: 'image/png' });
 
     if (navigator.share) {
@@ -832,8 +850,6 @@ async function shareImage(jobId, index) {
       triggerDownload(blob, `luma_${index + 1}.png`);
     }
 
-    // ── Record interaction ──
-    recordInteraction(jobId, index, 'shared', title);
     toast('Shared! Title copied ✓');
   } catch(e) {
     if (e.name === 'AbortError') return; // user cancelled — silent
